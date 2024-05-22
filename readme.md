@@ -1,1 +1,1 @@
-# Low-rand Representation Learning for Dynamical Systems
+# Low-rank Representation Learning for Dynamical Systems
