@@ -15,6 +15,7 @@ from scipy.stats import norm
 
 DEFAULT_X = np.pi
 DEFAULT_Y = 1.0
+EPS = 1e-6
 
 
 #adds gaussian noise
@@ -325,39 +326,34 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         super().__init__(sigma=sigma)
         self.rollout_batch_size = rollout_batch_size
 
-
-    def uniform_sample(self, batches=200, seed = 0, store_path=None):
+    def sample(self,
+               batches=200,
+               seed = 0,
+               store_path=None,
+               non_zero_initial=False,
+               dist = 'uniform_theta'):
         ptr = 0
-        g = self.g
-        m = self.m
-        l = self.l
-        dt = self.dt
         dataset = np.zeros((batches * self.rollout_batch_size, 7))
         prob_set = np.zeros((batches * self.rollout_batch_size,))
         for i in range(batches):
             np.random.seed(seed)
-            initial_state = np.random.uniform(low=[0, -self.max_speed],
-                                              high=[2 * np.pi, self.max_speed],
-                                              size=(self.rollout_batch_size, 2))
-            action = np.random.uniform(low=-self.max_torque,
-                                       high=self.max_torque,
-                                       size=self.rollout_batch_size)
-            th, thdot = initial_state[:, 0], initial_state[:, 1]
-            theta_ddot = 3 * g / (2 * l) * np.sin(th) + 3.0 / (m * l**2) * action
+            if dist == 'uniform_theta':
+                th, thdot = self.uniform_theta_sample(non_zero_initial)
+            elif dist == 'uniform_sin_theta':
+                th, thdot = self.unifrom_sin_theta_sample()
+            else:
+                raise NotImplementedError
+            action = self.uniform_action_sample()
+            new_th, new_thdot = self.batch_step(th, thdot, action)
 
-            new_th = th + thdot * dt
-            new_thdot = thdot + theta_ddot * dt
-            new_thdot = np.clip(new_thdot, -self.max_speed, self.max_speed) # for numerical stability when calculating log prob
+            # add noise
             new_state = np.vstack((new_th, new_thdot)).T
-
             if self.sigma != 0.0:
-                noise = np.random.normal(scale=self.sigma, size=(self.rollout_batch_size, 2))
+                noise, prob = self.get_noise_and_prob()
                 new_state = new_state + noise
-                prob = np.prod(norm.pdf(noise, loc=np.zeros([2, ]), scale=self.sigma * np.ones([2, ])), axis=1)
 
-            obs_t = np.vstack([np.cos(th), np.sin(th), thdot]).T
-            obs_tp1 = np.vstack([np.cos(new_th), np.sin(new_th), new_thdot]).T
-
+            obs_t = self.get_obs(th, thdot)
+            obs_tp1 = self.get_obs(new_state[:, 0], new_state[:, 1])
 
             batch = np.hstack([obs_t, action[:, np.newaxis], obs_tp1])
             dataset[ptr:ptr + self.rollout_batch_size] = batch
@@ -370,6 +366,62 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
             np.save(os.path.join(store_path, 'prob_pendulum.npy'), prob_set)
 
         return dataset, prob_set
+
+
+    def unifrom_sin_theta_sample(self,):
+        initial_sin_theta = np.random.uniform(low=-1, high=1, size=(self.rollout_batch_size,))
+        rademacher = np.random.choice([-1, 1], size=(self.rollout_batch_size,))
+        initial_cos_theta = np.sqrt(1 - initial_sin_theta ** 2) * rademacher
+        theta_dot = np.random.uniform(-self.max_speed, self.max_speed, size=(self.rollout_batch_size,))
+        th = np.arctan2(initial_sin_theta, initial_cos_theta)
+        return th, theta_dot
+
+    def uniform_action_sample(self):
+        return np.random.uniform(low=-self.max_torque,
+                                       high=self.max_torque,
+                                       size=self.rollout_batch_size)
+
+    def get_noise_and_prob(self):
+        # if self.sigma != 0.0:
+        noise = np.random.normal(scale=self.sigma * self.dt, size=(self.rollout_batch_size, 2))
+        # new_state = new_state + noise
+        prob = np.prod(norm.pdf(noise, loc=np.zeros([2, ]), scale=self.sigma * self.dt * np.ones([2, ])), axis=1)
+        return noise, prob
+
+    def batch_step(self, th, thdot, action):
+        theta_ddot = 3 * self.g / (2 * self.l) * np.sin(th) + 3.0 / (self.m * self.l ** 2) * action
+
+        new_th = th + thdot * self.dt
+        new_thdot = thdot + theta_ddot * self.dt
+
+        return new_th, new_thdot
+
+    def get_obs(self, th, thdot):
+        thdot = np.clip(thdot, -self.max_speed, self.max_speed)  # for numerical stability when calculating log prob
+        return np.vstack([np.cos(th), np.sin(th), thdot]).T
+
+    def uniform_theta_sample(self, non_zero_initial=False):
+        if non_zero_initial:
+            # for numerical stability
+            initial_state = np.random.uniform(low=[np.pi / 2 + EPS, -self.max_speed],
+                                              high=[np.pi * 3 / 2 - EPS, self.max_speed],
+                                              size=(self.rollout_batch_size, 2))
+        else:
+            initial_state = np.random.uniform(low=[0, -self.max_speed],
+                                              high=[2 * np.pi, self.max_speed],
+                                              size=(self.rollout_batch_size, 2))
+        th, thdot = initial_state[:, 0], initial_state[:, 1]
+        return th, thdot
+
+    def get_true_marginal(self, st_at, dist='unifrom_theta'):
+        if dist == 'uniform_theta':
+            sin_theta = st_at[:, 1]
+            true_marginal = (1 / np.pi / 16) * np.reciprocal(np.sqrt(1 - sin_theta ** 2) + 1e-8)  # arcsine distribution
+        elif dist == 'uniform_sin_theta':
+            true_marginal = 1 / (2 * np.pi * 16) * np.ones((len(st_at)))
+        else:
+            raise NotImplementedError
+        return true_marginal
 
 
 def angle_normalize(x):

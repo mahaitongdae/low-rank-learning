@@ -11,37 +11,38 @@ class DensityEstimator(object):
 
     def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
         self.embedding_dim = embedding_dim
+        self.device = torch.device(kwargs.get('device'))
         if kwargs.get('sigmoid_output', False):
             self.phi = MLP(input_dim= state_dim + action_dim,
                            hidden_dim=256,
                            hidden_depth=2,
                            output_dim=embedding_dim,
-                           output_mod=torch.nn.Sigmoid())
+                           output_mod=torch.nn.Sigmoid()).to(device=self.device)
             self.mu = MLP(input_dim=state_dim,
                           hidden_dim=256,
                           hidden_depth=2,
                           output_dim=embedding_dim,
-                          output_mod=torch.nn.Sigmoid())
+                          output_mod=torch.nn.Sigmoid()).to(device=self.device)
         else:
             self.phi = MLP(input_dim=state_dim + action_dim,
                            hidden_dim=256,
                            hidden_depth=2,
                            output_dim=embedding_dim,
-                           output_mod=torch.nn.Softplus())
+                           output_mod=torch.nn.Softplus()).to(device=self.device)
             self.mu = MLP(input_dim=state_dim,
                           hidden_dim=256,
                           hidden_depth=2,
                           output_dim=embedding_dim,
-                          output_mod=torch.nn.Softplus())
+                          output_mod=torch.nn.Softplus()).to(device=self.device)
 
         self.state_dim = state_dim
         self.action_dim = action_dim
 
         self.phi_optimizer = torch.optim.Adam(params=self.phi.parameters(),
-                                              lr=3e-4,
+                                              lr=1e-3,
                                               betas=(0.9, 0.999))
         self.mu_optimizer = torch.optim.Adam(params=self.mu.parameters(),
-                                             lr=3e-4,
+                                             lr=1e-3,
                                              betas=(0.9, 0.999))
         self.kwargs = kwargs
 
@@ -50,8 +51,8 @@ class DensityEstimator(object):
 
     def get_prob(self, st_at, s_tp1):
 
-        phi_sa = self.phi(st_at)
-        mu_stp1 = self.mu(s_tp1)
+        phi_sa = 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
+        mu_stp1 = 1 / (self.embedding_dim ** 0.5) * self.mu(s_tp1)
         prob = torch.sum(phi_sa * mu_stp1, dim=-1)
         # return torch.clamp(prob, min=5e-10, max=1.0) # clamping for numerical stability
         return prob
@@ -59,7 +60,7 @@ class DensityEstimator(object):
     def normalize_or_regularize(self, log_prob):
         if self.kwargs.get('integral_normalization', False):
             norm_weights = self.kwargs.get('integral_normalization_weights', 1.)
-            normalization_loss = norm_weights * (torch.sum(torch.exp(log_prob)) - 1) ** 2
+            normalization_loss = norm_weights * (torch.mean(torch.exp(log_prob)) - 1) ** 2
             return normalization_loss
 
         elif self.kwargs.get('logprob_regularization', False):
@@ -74,8 +75,7 @@ class DensityEstimator(object):
 
 class MLEEstimator(DensityEstimator):
     
-    def __init__(self,embedding_dim, state_dim, action_dim,
-                 **kwargs):
+    def __init__(self,embedding_dim, state_dim, action_dim, **kwargs):
         super().__init__(embedding_dim, state_dim, action_dim, **kwargs)
 
 
@@ -110,8 +110,8 @@ class NCEEstimator(DensityEstimator):
         if self.noise_args.get('dist') == 'uniform':
             uniform_scale = self.noise_args.get('uniform_scale')
             uniform_scale = torch.tensor(uniform_scale).float()
-            self.noise_dist = torch.distributions.uniform.Uniform(low= (-1 - EPS) * uniform_scale,
-                                                                  high= (1 + EPS) * uniform_scale)
+            self.noise_dist = torch.distributions.uniform.Uniform(low= (-1 - EPS) * uniform_scale.to(self.device),
+                                                                  high= (1 + EPS) * uniform_scale.to(self.device))
         else:
             raise NotImplementedError('noise dist for NCE not implemented')
 
@@ -125,6 +125,8 @@ class NCEEstimator(DensityEstimator):
 
         if self.kwargs.get('nce_loss') == 'ranking':
             nce_loss = self.__rankingClassificationLoss(st_at, s_tp1)
+        elif self.kwargs.get('nce_loss') == 'self_contrastive':
+            nce_loss = self.__self_contrastive_loss(st_at, s_tp1)
         else:
             raise NotImplementedError('Haven\'t implemented binary NCE loss yet.')
         info.update({'est_loss': nce_loss.item()})
@@ -162,6 +164,30 @@ class NCEEstimator(DensityEstimator):
             print('nan or inf detected')
         ranking_loss = -1 * torch.mean(torch.log(conditional))
         return ranking_loss
+
+    def __self_contrastive_loss(self, st_at, s_tp1):
+        """
+        Self contrastive loss, modified from
+        https://github.com/shelowize/lvrep-rl/blob/main/agent/ctrlsac/ctrlsac_agent.py
+        Parameters
+        ----------
+        st_at
+        s_tp1
+
+        Returns
+        -------
+
+        """
+        phi_sa = self.phi(st_at)
+        mu_stp1 = self.mu(s_tp1)
+
+        labels = torch.eye(st_at.shape[0]).to(self.device)
+
+        contrastive = (phi_sa[:, None, :] * mu_stp1[None, :, :]).sum(-1)
+        model_loss = torch.nn.CrossEntropyLoss()
+        model_loss = model_loss(contrastive, labels)
+        return model_loss
+
 
 
 

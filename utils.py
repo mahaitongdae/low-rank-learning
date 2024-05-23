@@ -8,12 +8,14 @@ from torch import nn
 
 
 class TransitionDataset(Dataset):
-    def __init__(self, file_path=None, data=None):
+    def __init__(self, file_path=None, data=None, device=None):
         if file_path is not None:
             self.data = np.load(file_path, allow_pickle=True)
         elif data is not None:
             self.data = data
         self.data = torch.from_numpy(self.data).float()
+        if device:
+            self.data=self.data.to(device)
 
     def __len__(self):
         return len(self.data)
@@ -23,7 +25,7 @@ class TransitionDataset(Dataset):
 
 class LabeledTransitionDataset(Dataset):
 
-    def __init__(self, file_path=None, data=None, prob=None):
+    def __init__(self, file_path=None, data=None, prob=None, device=None):
         if file_path is not None:
 
             self.data = np.load('tran_' + file_path, allow_pickle=True)
@@ -32,6 +34,9 @@ class LabeledTransitionDataset(Dataset):
             self.prob = prob
         self.data = torch.from_numpy(self.data).float()
         self.prob = torch.from_numpy(self.prob).float()
+        if device:
+            self.data = self.data.to(device)
+            self.prob = self.prob.to(device)
 
     def __len__(self):
         assert len(self.data) == len(self.prob)
