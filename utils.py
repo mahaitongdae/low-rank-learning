@@ -77,6 +77,30 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.trunk(x)
 
+class LearnableRandomFeature(nn.Module):
+    def __init__(self,
+                 input_dim,
+                 hidden_dim,
+                 output_dim,
+                 hidden_depth,
+                 batch_size,
+                 output_mod=None,
+                 device=torch.device('cpu')
+                 ):
+        super().__init__()
+        weights_dim = input_dim # TODO: we can also change here
+        self.n = torch.normal(0, 1., size=(output_dim, input_dim)).to(device) # RF dim * s_dim
+        self.trunk = mlp(input_dim, hidden_dim, input_dim, hidden_depth, output_mod)
+        self.apply(weight_init)
+        self.b = 2 * np.pi * torch.rand(size=(batch_size, output_dim)).to(device)
+        self.trunk.to(device)
+
+
+    def forward(self, x):
+        w = self.trunk(self.n) # RF_dim * s_dim
+        wx_p_b = x @ w.T + self.b
+        return torch.cos(wx_p_b)
+
 
 def mlp(input_dim, hidden_dim, output_dim, hidden_depth, output_mod=None):
     if hidden_depth == 0:

@@ -1,7 +1,8 @@
 import torch
 import numpy as np
-from utils import MLP
+from utils import MLP, LearnableRandomFeature
 EPS = 1e-6
+from scipy.stats import norm
 
 class DensityEstimator(object):
     """
@@ -11,27 +12,29 @@ class DensityEstimator(object):
 
     def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
         self.embedding_dim = embedding_dim
-        self.device = torch.device(kwargs.get('device'))
+
+        hidden_dim = kwargs.get('hidden_dim', 256)
+        hidden_depth = kwargs.get('hidden_depth', 2)
         if kwargs.get('sigmoid_output', False):
             self.phi = MLP(input_dim= state_dim + action_dim,
-                           hidden_dim=256,
-                           hidden_depth=2,
+                           hidden_dim=hidden_dim,
+                           hidden_depth=hidden_depth,
                            output_dim=embedding_dim,
                            output_mod=torch.nn.Sigmoid()).to(device=self.device)
             self.mu = MLP(input_dim=state_dim,
-                          hidden_dim=256,
-                          hidden_depth=2,
+                          hidden_dim=hidden_dim,
+                          hidden_depth=hidden_depth,
                           output_dim=embedding_dim,
                           output_mod=torch.nn.Sigmoid()).to(device=self.device)
         else:
             self.phi = MLP(input_dim=state_dim + action_dim,
-                           hidden_dim=256,
-                           hidden_depth=2,
+                           hidden_dim=hidden_dim,
+                           hidden_depth=hidden_depth,
                            output_dim=embedding_dim,
                            output_mod=torch.nn.Softplus()).to(device=self.device)
             self.mu = MLP(input_dim=state_dim,
-                          hidden_dim=256,
-                          hidden_depth=2,
+                          hidden_dim=hidden_dim,
+                          hidden_depth=hidden_depth,
                           output_dim=embedding_dim,
                           output_mod=torch.nn.Softplus()).to(device=self.device)
 
@@ -188,12 +191,161 @@ class NCEEstimator(DensityEstimator):
         model_loss = model_loss(contrastive, labels)
         return model_loss
 
+class SupervisedEstimator(DensityEstimator):
+
+    def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
+        super().__init__(embedding_dim, state_dim, action_dim, **kwargs)
+
+
+    def estimate(self, batch):
+
+        transition, labels = batch
+        st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
+                        transition[:, self.state_dim + self.action_dim:])
+        prob = self.get_prob(st_at, s_tp1)
+        loss_fn = torch.nn.MSELoss()
+        loss = loss_fn(prob, labels)
+        self.phi_optimizer.zero_grad()
+        self.mu_optimizer.zero_grad()
+        loss.backward()
+        self.phi_optimizer.step()
+        self.mu_optimizer.step()
+
+        info = {'est_loss': loss.item()}
+
+        return info
+
+class SupervisedLearnableRandomFeatureEstimator(object):
+
+    def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
+        self.device = torch.device(kwargs.get('device'))
+        self.rf = LearnableRandomFeature(input_dim=state_dim,
+                                         output_dim=embedding_dim,
+                                         hidden_dim=kwargs.get('hidden_dim', 256),
+                                         hidden_depth=kwargs.get('hidden_depth', 2),
+                                         batch_size=kwargs.get('train_batch_size', 512),
+                                         device=self.device
+                                         )
+
+        self.f = MLP(input_dim=state_dim + action_dim,
+                     output_dim=state_dim,
+                     hidden_dim=kwargs.get('hidden_dim', 256),
+                     hidden_depth=kwargs.get('hidden_depth', 2),
+                     ).to(self.device)
+
+
+        self.rf_optimizer = torch.optim.Adam(params=self.rf.parameters(),
+                                              lr=1e-3,
+                                              betas=(0.9, 0.999))
+        self.f_optimizer = torch.optim.Adam(params=self.f.parameters(),
+                                             lr=1e-3,
+                                             betas=(0.9, 0.999))
+        self.kwargs = kwargs
+
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+
+
+    def get_prob(self, st_at, s_tp1):
+        fsa = self.f(st_at)
+        phi_fsa = self.rf(fsa)
+        phi_stp1 = self.rf(s_tp1)
+
+        prob = 64 * torch.mean(phi_fsa * phi_stp1, dim=-1)
+        return prob
+
+    def estimate(self, batch):
+        transition, labels = batch
+        st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
+                        transition[:, self.state_dim + self.action_dim:])
+        prob = self.get_prob(st_at, s_tp1)
+        loss_fn = torch.nn.MSELoss()
+        loss = loss_fn(prob, labels)
+        self.rf_optimizer.zero_grad()
+        self.f_optimizer.zero_grad()
+        loss.backward()
+        self.rf_optimizer.step()
+        self.f_optimizer.step()
+
+        info = {'est_loss': loss.item(),
+                'mean_predicted': torch.mean(prob.cpu()).item(),
+                'mean_true': torch.mean(labels.cpu()).item()}
+
+        return info
+
+
+class SupervisedSingleNetwork(object):
+
+    def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
+        self.device = torch.device(kwargs.get('device'))
+        self.f = MLP(input_dim=state_dim + action_dim + state_dim,
+                     output_dim=1,
+                     hidden_dim=kwargs.get('hidden_dim', 256),
+                     hidden_depth=kwargs.get('hidden_depth', 2),
+                     ).to(self.device)
+
+        self.f_optimizer = torch.optim.Adam(self.f.parameters(),
+                                            lr=1e-3,
+                                            betas=(0.9, 0.999))
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+
+    # def estimate(self, batch):
+    #     transition, labels = batch
+    #     prob = self.f(transition)
+    #     loss_fn = torch.nn.MSELoss()
+    #     loss = loss_fn(prob, labels)
+    #     self.f_optimizer.zero_grad()
+    #     loss.backward()
+    #     self.f_optimizer.step()
+    #
+    #     info = {'est_loss': loss.item(),
+    #             'dist_predicted': prob.detach().cpu().numpy(),
+    #             'dist_true': labels.detach().cpu().numpy()}
+    #
+    #     return info
+
+    def estimate(self, batch):
+        transition, labels = batch
+        transition = transition.cpu().numpy()
+        labels = labels.cpu().numpy()
+        st, at, s_tp1 = (transition[:, :self.state_dim],
+                         transition[:, self.state_dim:self.state_dim + self.action_dim],
+                        transition[:, self.state_dim + self.action_dim:])
+        th = st[:, 0]
+        thdot = st[:, 1]
+        max_speed = 8
+        max_torque = 2.0
+        dt = 0.05
+        g = 10.0
+        m = 1.0
+        l = 1.0
+        theta_ddot = 3 * g / (2 * l) * np.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
+        new_th = th + dt * thdot
+        new_thdot = thdot + dt * theta_ddot
+        new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
+        new_thdot = np.clip(new_thdot, -max_speed, max_speed)
+        f_sa = np.vstack([new_th, new_thdot]).T
+        noise = s_tp1 - f_sa
+        dens = norm.pdf(noise, loc = [0.0, 0.0], scale=[0.05, 0.05])
+        dens_joint = np.prod(dens, axis=1)
+
+        # prob = self.f(transition)
+        # loss_fn = torch.nn.MSELoss()
+        # loss = loss_fn(prob, labels)
+        loss = np.mean((dens_joint - labels) ** 2)
+        # self.f_optimizer.zero_grad()
+        # loss.backward()
+        # self.f_optimizer.step()
+
+        info = {'est_loss': loss,
+                # 'dist_predicted': prob.detach().cpu().numpy(),
+                # 'dist_true': labels.detach().cpu().numpy()
+                }
+
+        return info
 
 
 
-
-
-
-        
 
 

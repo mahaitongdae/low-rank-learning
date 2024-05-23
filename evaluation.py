@@ -7,9 +7,10 @@ from envs.noisy_pendulum import ParallelNoisyPendulum
 from utils import LabeledTransitionDataset
 from torch.utils.data import DataLoader
 import argparse
-from agents.estimator import NCEEstimator, MLEEstimator
+from agents.estimator import NCEEstimator, MLEEstimator, SupervisedEstimator
 import matplotlib.pyplot as plt
 import seaborn as sns
+import pandas as pd
 
 def evaluate(args, estimator=None, test_dataloader=None, data_generator=None, exp_dir=None):
     if test_dataloader is None:
@@ -41,6 +42,11 @@ def evaluate(args, estimator=None, test_dataloader=None, data_generator=None, ex
                                      action_dim=1,
                                      noise_args=noise_args,
                                      **vars(args))
+        elif args.estimator == 'supervised':
+            estimator = SupervisedEstimator(embedding_dim=args.feature_dim,
+                                            state_dim=3,
+                                            action_dim=1,
+                                            **vars(args))
         else:
             raise NotImplementedError
 
@@ -54,31 +60,35 @@ def evaluate(args, estimator=None, test_dataloader=None, data_generator=None, ex
 def compare_joint_prob(args, estimator, test_dataloader, data_generator):
     evaluation_mse = []
     errors = []
+    data_predicted = {"prob":[]}
+    data_true = {"prob": []}
 
     for batch, (sasp, prob) in enumerate(test_dataloader):
         st_at, s_tp1 = sasp[:, :4], sasp[:, 4:]
-        predicted_joint = estimator.get_prob(st_at, s_tp1).cpu()
-        print(f"mean predicted joint: {torch.mean(predicted_joint).item()}")
-        sin_theta = st_at[:, 1].cpu()
-        true_marginal = data_generator.get_true_marginal(st_at.cpu(), dist=args.sample)
-        true_joint = np.multiply(prob.cpu(), true_marginal)
-
-        normalized_true_joint = true_joint / torch.mean(true_joint)
-        print(f"mean true joint: {torch.mean(normalized_true_joint).item()}")
-        # true_marginal = (1 / np.pi / 16) * np.reciprocal(np.sqrt(1 - sin_theta ** 2) + 1e-8)  # arcsine distribution
-        # true_joint = np.multiply(prob.cpu(), true_marginal)
         eval_loss_fn = torch.nn.MSELoss()
+        true_conditional = prob.cpu()
+        if not isinstance(estimator, SupervisedEstimator):
+            predicted_joint = estimator.get_prob(st_at, s_tp1).cpu()
+            print(f"mean predicted joint: {torch.mean(predicted_joint).item()}")
+            true_marginal = data_generator.get_true_marginal(st_at.cpu(), dist=args.sample)
+            predicted_conditional = np.divide(predicted_joint, true_marginal)
 
-        mse = eval_loss_fn(predicted_joint, normalized_true_joint)
-        errors += predicted_joint.tolist()
-        if mse.item() > 1e6: # stability stuff
-            pass
         else:
-            evaluation_mse.append(mse.item())
+            predicted_conditional = estimator.get_prob(st_at, s_tp1).cpu()
+        mse = eval_loss_fn(predicted_conditional, true_conditional)
+        data_predicted['prob'] += predicted_conditional.tolist()
+        data_true['prob'] += true_conditional.tolist()
+        evaluation_mse.append(mse.item())
     print(f"Evaluation MSE: {np.mean(evaluation_mse)}")
-    print(evaluation_mse)
+
+    # plot
+    df_predicted = pd.DataFrame.from_dict(data_predicted)
+    df_true = pd.DataFrame.from_dict(data_true)
+    df_predicted['label'] = 'predicted'
+    df_true['label'] = 'true'
     plt.figure()
-    sns.catplot(errors)
+    sns.catplot(data=pd.concat([df_predicted, df_true], ignore_index=True),
+                x='label', y='prob')
     plt.show()
 
 
@@ -91,4 +101,4 @@ def evaluation_saved_features(exp_dir):
 
 
 if __name__ == '__main__':
-    evaluation_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/mle/2024-05-22-22-16-20')
+    evaluation_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised/2024-05-23-11-11-45')

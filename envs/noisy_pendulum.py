@@ -322,9 +322,12 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
     Data collection environment for parallel environments
     """
 
-    def __init__(self, sigma=0.0, rollout_batch_size=512):
+    def __init__(self, sigma=0.0, rollout_batch_size=512, sin_cos_obs=False):
         super().__init__(sigma=sigma)
         self.rollout_batch_size = rollout_batch_size
+        self.sin_cos_obs = sin_cos_obs
+        self.state_dim = 3 if sin_cos_obs else 2
+        self.action_dim = 1
 
     def sample(self,
                batches=200,
@@ -333,7 +336,7 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
                non_zero_initial=False,
                dist = 'uniform_theta'):
         ptr = 0
-        dataset = np.zeros((batches * self.rollout_batch_size, 7))
+        dataset = np.zeros((batches * self.rollout_batch_size, 2 * self.state_dim + self.action_dim))
         prob_set = np.zeros((batches * self.rollout_batch_size,))
         for i in range(batches):
             np.random.seed(seed)
@@ -398,7 +401,12 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
 
     def get_obs(self, th, thdot):
         thdot = np.clip(thdot, -self.max_speed, self.max_speed)  # for numerical stability when calculating log prob
-        return np.vstack([np.cos(th), np.sin(th), thdot]).T
+        if self.sin_cos_obs:
+            return np.vstack([np.cos(th), np.sin(th), thdot]).T
+        else:
+            th = angle_normalize(th)
+            return np.vstack([th, thdot]).T
+
 
     def uniform_theta_sample(self, non_zero_initial=False):
         if non_zero_initial:

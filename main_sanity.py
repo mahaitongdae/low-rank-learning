@@ -2,7 +2,11 @@ from envs.noisy_pendulum import ParallelNoisyPendulum
 from utils import TransitionDataset, LabeledTransitionDataset
 import torch
 from torch.utils.data import DataLoader
-from agents.estimator import MLEEstimator, NCEEstimator, SupervisedEstimator, SupervisedLearnableRandomFeatureEstimator
+from agents.estimator import (MLEEstimator,
+                              NCEEstimator,
+                              SupervisedEstimator,
+                              SupervisedLearnableRandomFeatureEstimator,
+                              SupervisedSingleNetwork)
 from tensorboardX import SummaryWriter
 import argparse
 import os
@@ -22,11 +26,11 @@ if __name__ == '__main__':
     # Tasks
     parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
     parser.add_argument('--sigma', default=1.0, type=float)
-    parser.add_argument("--sample", default='uniform_sin_theta', type=str,
+    parser.add_argument("--sample", default='uniform_theta', type=str,
                         help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
 
     ## Estimators general
-    parser.add_argument('--estimator', default='supervised_rf', type=str)
+    parser.add_argument('--estimator', default='sanity_check', type=str)
     parser.add_argument('--feature_dim', default=512, type=int)
     parser.add_argument('--hidden_dim', default=1024, type=int)
     parser.add_argument('--hidden_depth', default=2, type=int)
@@ -67,58 +71,37 @@ if __name__ == '__main__':
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets',dist=args.sample)
     else:
         raise NotImplementedError
-    if not args.estimator.startswith('supervised'):
-        dataset = TransitionDataset(data=dataset, device=torch.device(args.device))
-    else:
-        dataset = LabeledTransitionDataset(data=dataset, prob=prob, device=torch.device(args.device))
+    # if not args.estimator.startswith('supervised'):
+    #     dataset = TransitionDataset(data=dataset, device=torch.device(args.device))
+    # else:
+    dataset = LabeledTransitionDataset(data=dataset, prob=prob, device=torch.device(args.device))
 
     ### initial training
 
     train_dataloader = DataLoader(dataset, batch_size=args.train_batch_size, shuffle=True)
     # len(train_dataloader)
     epoch = 10
-    if args.estimator == 'mle':
-        estimator = MLEEstimator(embedding_dim=args.feature_dim,
-                                 state_dim=3,
-                                 action_dim=1,
-                                 **vars(args))
-    elif args.estimator == 'nce':
-        if args.noise_dist == 'uniform':
-            noise_args = {'dist': "uniform",
-                          'uniform_scale': [1.0, 1.0, 8.0]}
-        else:
-            raise NotImplementedError
-        estimator = NCEEstimator(embedding_dim=args.feature_dim,
-                                 state_dim=3,
-                                 action_dim=1,
-                                 noise_args=noise_args,
-                                 **vars(args))
-    elif args.estimator == 'supervised':
-        estimator = SupervisedEstimator(embedding_dim=args.feature_dim,
-                                        state_dim=3,
+    estimator = SupervisedSingleNetwork(embedding_dim=-1,
+                                        state_dim=data_generator.state_dim,
                                         action_dim=1,
                                         **vars(args))
-    elif args.estimator == 'supervised_rf':
-        estimator = SupervisedLearnableRandomFeatureEstimator(embedding_dim=args.feature_dim,
-                                                              state_dim=3,
-                                                              action_dim=1,
-                                                              **vars(args))
-    else:
-        raise NotImplementedError
 
     for batch, transition in enumerate(train_dataloader):
         info = estimator.estimate(transition)
         for key, value in info.items():
-            summary_writer.add_scalar(key, value, batch + 1)
+            if 'dist' in key:
+                summary_writer.add_histogram(key, value, batch+1)
+            else:
+                summary_writer.add_scalar(key, value, batch + 1)
         summary_writer.flush()
         print(f"Epoch {batch + 1}, loss {info.get('est_loss')}")
 
-    if 'rf' not in args.estimator:
-        torch.save(estimator.phi.state_dict(), os.path.join(exp_dir, 'feature_phi.pth'))
-        torch.save(estimator.mu.state_dict(), os.path.join(exp_dir, 'feature_mu.pth'))
-    else:
-        torch.save(estimator.rf.state_dict(), os.path.join(exp_dir, 'rf.pth'))
-        torch.save(estimator.f.state_dict(), os.path.join(exp_dir, 'f.pth'))
+    # if 'rf' not in args.estimator:
+    #     torch.save(estimator.phi.state_dict(), os.path.join(exp_dir, 'feature_phi.pth'))
+    #     torch.save(estimator.mu.state_dict(), os.path.join(exp_dir, 'feature_mu.pth'))
+    # else:
+    #     torch.save(estimator.rf.state_dict(), os.path.join(exp_dir, 'rf.pth'))
+    #     torch.save(estimator.f.state_dict(), os.path.join(exp_dir, 'f.pth'))
 
     # save dicts
     args_dict = vars(args)
@@ -129,7 +112,7 @@ if __name__ == '__main__':
     ## Evaluations
 
     # generating test set
-    evaluate(args, estimator=estimator)
+    # evaluate(args, estimator=estimator)
 
 
 
