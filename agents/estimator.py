@@ -283,67 +283,108 @@ class SupervisedSingleNetwork(object):
                      hidden_dim=kwargs.get('hidden_dim', 256),
                      hidden_depth=kwargs.get('hidden_depth', 2),
                      ).to(self.device)
-
+        # self.sigma = torch.nn.Parameter(torch.tensor(0.1))
+        # self.f = lambda x: 1 / (2 * np.pi * self.sigma ** 2) * torch.exp(-0.5 * torch.norm(x, dim=1) ** 2 / (self.sigma ** 2))
+        #
         self.f_optimizer = torch.optim.Adam(self.f.parameters(),
-                                            lr=1e-3,
+                                            lr=3e-4,
                                             betas=(0.9, 0.999))
         self.state_dim = state_dim
         self.action_dim = action_dim
 
+    def estimate(self, batch):
+        transition, labels = batch
+        mean = transition.mean(dim=1, keepdim=True)
+        std = transition.std(dim=1, keepdim=True)
+        normalized_data = (transition - mean) / std
+        prob = self.f(normalized_data)
+        loss_fn = torch.nn.MSELoss()
+        loss = loss_fn(prob, labels)
+        self.f_optimizer.zero_grad()
+        loss.backward()
+        self.f_optimizer.step()
+
+        info = {'est_loss': loss.item(),
+                'dist_predicted': prob.detach().cpu().numpy(),
+                'dist_true': labels.detach().cpu().numpy()}
+
+        return info
+
     # def estimate(self, batch):
     #     transition, labels = batch
-    #     prob = self.f(transition)
-    #     loss_fn = torch.nn.MSELoss()
-    #     loss = loss_fn(prob, labels)
-    #     self.f_optimizer.zero_grad()
-    #     loss.backward()
-    #     self.f_optimizer.step()
+    #     transition = transition.cpu().numpy()
+    #     labels = labels.cpu().numpy()
+    #     st, at, s_tp1 = (transition[:, :self.state_dim],
+    #                      transition[:, self.state_dim:self.state_dim + self.action_dim],
+    #                     transition[:, self.state_dim + self.action_dim:])
+    #     th = st[:, 0]
+    #     thdot = st[:, 1]
+    #     max_speed = 8
+    #     max_torque = 2.0
+    #     dt = 0.05
+    #     g = 10.0
+    #     m = 1.0
+    #     l = 1.0
+    #     theta_ddot = 3 * g / (2 * l) * np.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
+    #     new_th = th + dt * thdot
+    #     new_thdot = thdot + dt * theta_ddot
+    #     # new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
+    #     new_thdot = np.clip(new_thdot, -max_speed, max_speed)
+    #     f_sa = np.vstack([new_th, new_thdot]).T
+    #     noise = s_tp1 - f_sa
+    #     dens = norm.pdf(noise, loc = [0.0, 0.0], scale=[0.05, 0.05])
+    #     dens_joint = np.prod(dens, axis=1)
     #
-    #     info = {'est_loss': loss.item(),
-    #             'dist_predicted': prob.detach().cpu().numpy(),
-    #             'dist_true': labels.detach().cpu().numpy()}
+    #     loss = np.mean((dens_joint - labels) ** 2)
+    #
+    #     info = {'est_loss': loss,
+    #             # 'dist_predicted': prob.detach().cpu().numpy(),
+    #             # 'dist_true': labels.detach().cpu().numpy()
+    #             }
     #
     #     return info
 
-    def estimate(self, batch):
-        transition, labels = batch
-        transition = transition.cpu().numpy()
-        labels = labels.cpu().numpy()
-        st, at, s_tp1 = (transition[:, :self.state_dim],
-                         transition[:, self.state_dim:self.state_dim + self.action_dim],
-                        transition[:, self.state_dim + self.action_dim:])
-        th = st[:, 0]
-        thdot = st[:, 1]
-        max_speed = 8
-        max_torque = 2.0
-        dt = 0.05
-        g = 10.0
-        m = 1.0
-        l = 1.0
-        theta_ddot = 3 * g / (2 * l) * np.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
-        new_th = th + dt * thdot
-        new_thdot = thdot + dt * theta_ddot
-        new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
-        new_thdot = np.clip(new_thdot, -max_speed, max_speed)
-        f_sa = np.vstack([new_th, new_thdot]).T
-        noise = s_tp1 - f_sa
-        dens = norm.pdf(noise, loc = [0.0, 0.0], scale=[0.05, 0.05])
-        dens_joint = np.prod(dens, axis=1)
+    # def estimate(self, batch):
+    #     transition, labels = batch
+    #     transition = transition.cpu().numpy()
+    #     # labels = labels.cpu().numpy()
+    #     st, at, s_tp1 = (transition[:, :self.state_dim],
+    #                      transition[:, self.state_dim:self.state_dim + self.action_dim],
+    #                     transition[:, self.state_dim + self.action_dim:])
+    #     th = st[:, 0]
+    #     thdot = st[:, 1]
+    #     max_speed = 8
+    #     max_torque = 2.0
+    #     dt = 0.05
+    #     g = 10.0
+    #     m = 1.0
+    #     l = 1.0
+    #     theta_ddot = 3 * g / (2 * l) * np.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
+    #     new_th = th + dt * thdot
+    #     new_thdot = thdot + dt * theta_ddot
+    #     # new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
+    #     new_thdot = np.clip(new_thdot, -max_speed, max_speed)
+    #     f_sa = np.vstack([new_th, new_thdot]).T
+    #     noise = s_tp1 - f_sa
+    #
+    #     prob = self.f(torch.from_numpy(20 * noise).to(self.device)).squeeze()
+    #
+    #     loss_fn = torch.nn.MSELoss()
+    #     loss = loss_fn(prob, labels)
+    #     add_loss = torch
+    #     # loss = np.mean((dens_joint - labels) ** 2)
+    #     self.f_optimizer.zero_grad()
+    #     loss.backward()
+    #     self.f_optimizer.step()
+    #     # print(self.sigma)
+    #
+    #     info = {'est_loss': loss,
+    #             'dist_predicted': prob.detach().cpu().numpy(),
+    #             'dist_true': labels.detach().cpu().numpy()
+    #             }
+    #
+    #     return info
 
-        # prob = self.f(transition)
-        # loss_fn = torch.nn.MSELoss()
-        # loss = loss_fn(prob, labels)
-        loss = np.mean((dens_joint - labels) ** 2)
-        # self.f_optimizer.zero_grad()
-        # loss.backward()
-        # self.f_optimizer.step()
-
-        info = {'est_loss': loss,
-                # 'dist_predicted': prob.detach().cpu().numpy(),
-                # 'dist_true': labels.detach().cpu().numpy()
-                }
-
-        return info
 
 
 

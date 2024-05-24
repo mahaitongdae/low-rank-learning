@@ -351,12 +351,15 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
 
             # add noise
             new_state = np.vstack((new_th, new_thdot)).T
-            if self.sigma != 0.0:
-                noise, prob = self.get_noise_and_prob()
-                new_state = new_state + noise
+            assert self.sigma != 0.0
+            noise = self.get_noise()
+            noisy_new_state = new_state + noise
 
+            noisy_new_state = self.clip_states(noisy_new_state)
+            corrected_noise = noisy_new_state - new_state
             obs_t = self.get_obs(th, thdot)
-            obs_tp1 = self.get_obs(new_state[:, 0], new_state[:, 1])
+            obs_tp1 = self.get_obs(noisy_new_state[:, 0], noisy_new_state[:, 1])
+            prob = self.get_prob(corrected_noise)
 
             batch = np.hstack([obs_t, action[:, np.newaxis], obs_tp1])
             dataset[ptr:ptr + self.rollout_batch_size] = batch
@@ -375,7 +378,7 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         initial_sin_theta = np.random.uniform(low=-1, high=1, size=(self.rollout_batch_size,))
         rademacher = np.random.choice([-1, 1], size=(self.rollout_batch_size,))
         initial_cos_theta = np.sqrt(1 - initial_sin_theta ** 2) * rademacher
-        theta_dot = np.random.uniform(-self.max_speed, self.max_speed, size=(self.rollout_batch_size,))
+        theta_dot = np.random.uniform(-0.5 * self.max_speed, 0.5 * self.max_speed, size=(self.rollout_batch_size,))
         th = np.arctan2(initial_sin_theta, initial_cos_theta)
         return th, theta_dot
 
@@ -384,12 +387,15 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
                                        high=self.max_torque,
                                        size=self.rollout_batch_size)
 
-    def get_noise_and_prob(self):
+    def get_noise(self):
         # if self.sigma != 0.0:
         noise = np.random.normal(scale=self.sigma * self.dt, size=(self.rollout_batch_size, 2))
         # new_state = new_state + noise
+        return noise
+
+    def get_prob(self, noise):
         prob = np.prod(norm.pdf(noise, loc=np.zeros([2, ]), scale=self.sigma * self.dt * np.ones([2, ])), axis=1)
-        return noise, prob
+        return prob
 
     def batch_step(self, th, thdot, action):
         theta_ddot = 3 * self.g / (2 * self.l) * np.sin(th) + 3.0 / (self.m * self.l ** 2) * action
@@ -400,23 +406,27 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         return new_th, new_thdot
 
     def get_obs(self, th, thdot):
-        thdot = np.clip(thdot, -self.max_speed, self.max_speed)  # for numerical stability when calculating log prob
+
         if self.sin_cos_obs:
             return np.vstack([np.cos(th), np.sin(th), thdot]).T
         else:
-            th = angle_normalize(th)
+            # th = angle_normalize(th)
             return np.vstack([th, thdot]).T
 
+    def clip_states(self, states):
+        th, thdot = states[:, 0], states[:, 1]
+        thdot = np.clip(thdot, -self.max_speed, self.max_speed)  # for numerical stability when calculating log prob
+        return np.vstack([th, thdot]).T
 
     def uniform_theta_sample(self, non_zero_initial=False):
         if non_zero_initial:
             # for numerical stability
-            initial_state = np.random.uniform(low=[np.pi / 2 + EPS, -self.max_speed],
-                                              high=[np.pi * 3 / 2 - EPS, self.max_speed],
+            initial_state = np.random.uniform(low=[np.pi / 2 + EPS, -0.5 * self.max_speed],
+                                              high=[np.pi * 3 / 2 - EPS, 0.5 * self.max_speed],
                                               size=(self.rollout_batch_size, 2))
         else:
-            initial_state = np.random.uniform(low=[0, -self.max_speed],
-                                              high=[2 * np.pi, self.max_speed],
+            initial_state = np.random.uniform(low=[0, -0.5 * self.max_speed],
+                                              high=[2 * np.pi, 0.5 * self.max_speed],
                                               size=(self.rollout_batch_size, 2))
         th, thdot = initial_state[:, 0], initial_state[:, 1]
         return th, thdot

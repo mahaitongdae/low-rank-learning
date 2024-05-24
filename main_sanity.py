@@ -26,7 +26,7 @@ if __name__ == '__main__':
     # Tasks
     parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
     parser.add_argument('--sigma', default=1.0, type=float)
-    parser.add_argument("--sample", default='uniform_theta', type=str,
+    parser.add_argument("--sample", default='uniform_sin_theta', type=str,
                         help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
 
     ## Estimators general
