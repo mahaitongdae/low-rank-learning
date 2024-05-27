@@ -69,12 +69,39 @@ class MLP(nn.Module):
                  hidden_dim,
                  output_dim,
                  hidden_depth,
+                 preprocess=None,
                  output_mod=None):
         super().__init__()
         self.trunk = mlp(input_dim, hidden_dim, output_dim, hidden_depth, output_mod)
         self.apply(weight_init)
+        if preprocess == 'norm':
+            self.preprocess = torch.nn.BatchNorm1d(input_dim)
+        elif preprocess == 'scale':
+            self.preprocess = lambda x: 20 * x
+        elif preprocess == 'none':
+            self.preprocess = lambda x: x
+        else:
+            raise NotImplementedError('preprocess not implemented')
 
     def forward(self, x):
+        x = self.preprocess(x)
+        return self.trunk(x)
+
+class NormalizedMLP(nn.Module):
+    def __init__(self,
+                 input_dim,
+                 hidden_dim,
+                 output_dim,
+                 hidden_depth,
+                 output_mod=None):
+        super().__init__()
+        self.trunk = mlp(input_dim, hidden_dim, output_dim, hidden_depth, output_mod)
+        self.larer_normlization = torch.nn.LayerNorm(input_dim)
+        self.batch_norm = torch.nn.BatchNorm1d(input_dim)
+        self.apply(weight_init)
+
+    def forward(self, x):
+        x = self.batch_norm(x)
         return self.trunk(x)
 
 class LearnableRandomFeature(nn.Module):

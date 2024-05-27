@@ -3,6 +3,7 @@ from utils import TransitionDataset, LabeledTransitionDataset
 import torch
 from torch.utils.data import DataLoader
 from agents.estimator import MLEEstimator, NCEEstimator, SupervisedEstimator, SupervisedLearnableRandomFeatureEstimator
+from agents.single_network_estimator import NCESingleNetwork
 from tensorboardX import SummaryWriter
 import argparse
 import os
@@ -16,18 +17,24 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Pipelines
     parser.add_argument("--device", default='cuda', type=str)
-    parser.add_argument("--train_batches", default=10000, type=int)
+    parser.add_argument("--train_batches", default=50000, type=int)
     parser.add_argument("--train_batch_size", default=512, type=int)
 
     # Tasks
     parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
     parser.add_argument('--sigma', default=1.0, type=float)
-    parser.add_argument("--sample", default='uniform_sin_theta', type=str,
+    parser.add_argument("--sample", default='gaussian', type=str,
                         help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
+    parser.add_argument("--sin_cos_obs", action='store_true')
+    parser.set_defaults(sin_cos_obs=True)
+
+    ## Sanity check arguments
+    parser.add_argument("--layer_normalization", action='store_true')
+    parser.set_defaults(layer_normalization=True)
 
     ## Estimators general
     parser.add_argument('--estimator', default='supervised_rf', type=str)
-    parser.add_argument('--feature_dim', default=512, type=int)
+    parser.add_argument('--feature_dim', default=1024, type=int)
     parser.add_argument('--hidden_dim', default=1024, type=int)
     parser.add_argument('--hidden_depth', default=2, type=int)
     parser.add_argument('--logprob_regularization', action='store_true')
@@ -79,7 +86,7 @@ if __name__ == '__main__':
     epoch = 10
     if args.estimator == 'mle':
         estimator = MLEEstimator(embedding_dim=args.feature_dim,
-                                 state_dim=3,
+                                 state_dim=data_generator.state_dim,
                                  action_dim=1,
                                  **vars(args))
     elif args.estimator == 'nce':
@@ -89,18 +96,18 @@ if __name__ == '__main__':
         else:
             raise NotImplementedError
         estimator = NCEEstimator(embedding_dim=args.feature_dim,
-                                 state_dim=3,
+                                 state_dim=data_generator.state_dim,
                                  action_dim=1,
                                  noise_args=noise_args,
                                  **vars(args))
     elif args.estimator == 'supervised':
         estimator = SupervisedEstimator(embedding_dim=args.feature_dim,
-                                        state_dim=3,
+                                        state_dim=data_generator.state_dim,
                                         action_dim=1,
                                         **vars(args))
     elif args.estimator == 'supervised_rf':
         estimator = SupervisedLearnableRandomFeatureEstimator(embedding_dim=args.feature_dim,
-                                                              state_dim=3,
+                                                              state_dim=data_generator.state_dim,
                                                               action_dim=1,
                                                               **vars(args))
     else:
@@ -109,16 +116,14 @@ if __name__ == '__main__':
     for batch, transition in enumerate(train_dataloader):
         info = estimator.estimate(transition)
         for key, value in info.items():
-            summary_writer.add_scalar(key, value, batch + 1)
+            if 'dist' in key:
+                summary_writer.add_histogram(key, value, batch+1)
+            else:
+                summary_writer.add_scalar(key, value, batch + 1)
         summary_writer.flush()
         print(f"Epoch {batch + 1}, loss {info.get('est_loss')}")
 
-    if 'rf' not in args.estimator:
-        torch.save(estimator.phi.state_dict(), os.path.join(exp_dir, 'feature_phi.pth'))
-        torch.save(estimator.mu.state_dict(), os.path.join(exp_dir, 'feature_mu.pth'))
-    else:
-        torch.save(estimator.rf.state_dict(), os.path.join(exp_dir, 'rf.pth'))
-        torch.save(estimator.f.state_dict(), os.path.join(exp_dir, 'f.pth'))
+    estimator.save(exp_dir)
 
     # save dicts
     args_dict = vars(args)
@@ -129,7 +134,7 @@ if __name__ == '__main__':
     ## Evaluations
 
     # generating test set
-    evaluate(args, estimator=estimator)
+    # evaluate(args, estimator=estimator)
 
 
 

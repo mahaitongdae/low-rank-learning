@@ -5,15 +5,15 @@ from torch.utils.data import DataLoader
 from agents.estimator import (MLEEstimator,
                               NCEEstimator,
                               SupervisedEstimator,
-                              SupervisedLearnableRandomFeatureEstimator,
-                              SupervisedSingleNetwork)
+                              SupervisedLearnableRandomFeatureEstimator)
+from agents.single_network_estimator import SupervisedSingleNetwork, NCESingleNetwork
 from tensorboardX import SummaryWriter
 import argparse
 import os
 from datetime import datetime
 import json
 import numpy as np
-from evaluation import evaluate
+from evaluation import evaluation_saved_features, evaluate_saved_single_networks
 
 if __name__ == '__main__':
 
@@ -26,16 +26,30 @@ if __name__ == '__main__':
     # Tasks
     parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
     parser.add_argument('--sigma', default=1.0, type=float)
-    parser.add_argument("--sample", default='uniform_sin_theta', type=str,
-                        help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
+    parser.add_argument("--sample", default='gaussian', type=str,
+                        help="how the s, a distribution is sampled, uniform_theta, uniform_sin_theta, gaussian")
 
-    ## Estimators general
-    parser.add_argument('--estimator', default='sanity_check', type=str)
+    ## Sanity check arguments
+    parser.add_argument("--noise_input", action='store_true')
+    parser.set_defaults(noise_input=True)
+    # parser.add_argument("--layer_normalization", action='store_true')
+    # parser.set_defaults(layer_normalization=False)
+    parser.add_argument("--preprocess", default='scale', type=str)
+    parser.add_argument("--output_log_prob", action='store_true')
+    parser.set_defaults(output_log_prob=True)
+    parser.add_argument("--true_parametric_model", action='store_true')
+    parser.set_defaults(true_parametric_model=False)
+
+
+    ## Networks
     parser.add_argument('--feature_dim', default=512, type=int)
-    parser.add_argument('--hidden_dim', default=1024, type=int)
+    parser.add_argument('--hidden_dim', default=256, type=int)
     parser.add_argument('--hidden_depth', default=2, type=int)
+
+    ## Estimators and regularization
+    parser.add_argument('--estimator', default='nce_single_network', type=str)
     parser.add_argument('--logprob_regularization', action='store_true')
-    parser.set_defaults(logprob_regularization=True)
+    parser.set_defaults(logprob_regularization=False)
     parser.add_argument("--logprob_regularization_weights", default=1., type=float)
     parser.add_argument("--integral_normalization", action='store_true')
     parser.set_defaults(integral_normalization=False)
@@ -46,7 +60,7 @@ if __name__ == '__main__':
     parser.set_defaults(sigmoid_output=False)
 
     # NCE
-    parser.add_argument("--nce_loss", default='self_contrastive', type=str,
+    parser.add_argument("--nce_loss", default='binary', type=str,
                         help="loss function for noise contrastive learning, either binary or ranking or self_contrastive.")
     parser.add_argument("--noise_dist", default='uniform', type=str,
                         help="noise distribution")
@@ -80,13 +94,28 @@ if __name__ == '__main__':
 
     train_dataloader = DataLoader(dataset, batch_size=args.train_batch_size, shuffle=True)
     # len(train_dataloader)
-    epoch = 10
-    estimator = SupervisedSingleNetwork(embedding_dim=-1,
-                                        state_dim=data_generator.state_dim,
-                                        action_dim=1,
-                                        **vars(args))
+    # epoch = 10
+
+    if args.estimator == 'nce_single_network':
+        # if args.noise_dist == 'gaussian':
+        #     noise_args = {'dist': "uniform",
+        #                   'uniform_scale': [1.0, 1.0]}
+        # else:
+        #     raise NotImplementedError
+        assert args.noise_input
+        estimator = NCESingleNetwork(embedding_dim=args.feature_dim,
+                                 state_dim=data_generator.state_dim,
+                                 action_dim=1,
+                                 # noise_args=noise_args,
+                                 **vars(args))
+    elif args.estimator == 'supervised_single_network':
+        estimator = SupervisedSingleNetwork(embedding_dim=-1,
+                                            state_dim=data_generator.state_dim,
+                                            action_dim=1,
+                                            **vars(args))
 
     for batch, transition in enumerate(train_dataloader):
+        # for _ in range(5):
         info = estimator.estimate(transition)
         for key, value in info.items():
             if 'dist' in key:
@@ -102,6 +131,7 @@ if __name__ == '__main__':
     # else:
     #     torch.save(estimator.rf.state_dict(), os.path.join(exp_dir, 'rf.pth'))
     #     torch.save(estimator.f.state_dict(), os.path.join(exp_dir, 'f.pth'))
+    estimator.save(exp_dir)
 
     # save dicts
     args_dict = vars(args)

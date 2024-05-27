@@ -11,7 +11,7 @@ import gym
 from gym import spaces
 # from gym.envs.classic_control import utils
 from gym.error import DependencyNotInstalled
-from scipy.stats import norm
+from scipy.stats import norm, truncnorm
 
 DEFAULT_X = np.pi
 DEFAULT_Y = 1.0
@@ -328,6 +328,9 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         self.sin_cos_obs = sin_cos_obs
         self.state_dim = 3 if sin_cos_obs else 2
         self.action_dim = 1
+        self.truncnorm_action = truncnorm(-0.5 * self.max_torque, 0.5 * self.max_torque)
+        self.truncnorm_th = truncnorm(-np.pi +EPS, np.pi - EPS)
+        self.truncnorm_thdot = truncnorm(-0.5 * self.max_speed, 0.5 * self.max_speed)
 
     def sample(self,
                batches=200,
@@ -344,9 +347,11 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
                 th, thdot = self.uniform_theta_sample(non_zero_initial)
             elif dist == 'uniform_sin_theta':
                 th, thdot = self.unifrom_sin_theta_sample()
+            elif dist == 'gaussian':
+                th, thdot = self.truncated_gaussian_sample()
             else:
                 raise NotImplementedError
-            action = self.uniform_action_sample()
+            action = self.truncated_gaussian_action_sample()
             new_th, new_thdot = self.batch_step(th, thdot, action)
 
             # add noise
@@ -386,6 +391,14 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         return np.random.uniform(low=-self.max_torque,
                                        high=self.max_torque,
                                        size=self.rollout_batch_size)
+
+    def truncated_gaussian_sample(self):
+        th = self.truncnorm_th.rvs(size=self.rollout_batch_size)
+        thdot = self.truncnorm_thdot.rvs(size=self.rollout_batch_size)
+        return th, thdot
+
+    def truncated_gaussian_action_sample(self):
+        return self.truncnorm_action.rvs(size=self.rollout_batch_size)
 
     def get_noise(self):
         # if self.sigma != 0.0:

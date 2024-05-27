@@ -8,11 +8,12 @@ from utils import LabeledTransitionDataset
 from torch.utils.data import DataLoader
 import argparse
 from agents.estimator import NCEEstimator, MLEEstimator, SupervisedEstimator
+from agents.single_network_estimator import NCESingleNetwork, SupervisedSingleNetwork
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
-def evaluate(args, estimator=None, test_dataloader=None, data_generator=None, exp_dir=None):
+def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=None, exp_dir=None):
     if test_dataloader is None:
         if args.dynamics == 'NoisyPendulum':
             data_generator = ParallelNoisyPendulum(sigma=args.sigma)
@@ -47,14 +48,33 @@ def evaluate(args, estimator=None, test_dataloader=None, data_generator=None, ex
                                             state_dim=3,
                                             action_dim=1,
                                             **vars(args))
+        elif args.estimator == 'nce_single_network':
+            # if args.noise_dist == 'gaussian':
+            #     noise_args = {'dist': "uniform",
+            #                   'uniform_scale': [1.0, 1.0]}
+            # else:
+            #     raise NotImplementedError
+            assert args.noise_input
+            estimator = NCESingleNetwork(embedding_dim=args.feature_dim,
+                                         state_dim=data_generator.state_dim,
+                                         action_dim=1,
+                                         # noise_args=noise_args,
+                                         **vars(args))
+        elif args.estimator == 'supervised_single_network':
+            estimator = SupervisedSingleNetwork(embedding_dim=-1,
+                                                state_dim=data_generator.state_dim,
+                                                action_dim=1,
+                                                **vars(args))
+
         else:
             raise NotImplementedError
 
     if exp_dir:
-        estimator.phi.load_state_dict(torch.load(os.path.join(exp_dir, 'feature_phi.pth')))
-        estimator.mu.load_state_dict(torch.load(os.path.join(exp_dir, 'feature_mu.pth')))
+        estimator.load(exp_dir)
 
-    compare_joint_prob(args, estimator, test_dataloader, data_generator)
+    return estimator, test_dataloader, data_generator
+
+    #
 
 
 def compare_joint_prob(args, estimator, test_dataloader, data_generator):
@@ -64,7 +84,8 @@ def compare_joint_prob(args, estimator, test_dataloader, data_generator):
     data_true = {"prob": []}
 
     for batch, (sasp, prob) in enumerate(test_dataloader):
-        st_at, s_tp1 = sasp[:, :4], sasp[:, 4:]
+        st_at, s_tp1 = (sasp[:, :data_generator.state_dim + data_generator.action_dim],
+                        sasp[:, data_generator.state_dim + data_generator.action_dim:])
         eval_loss_fn = torch.nn.MSELoss()
         true_conditional = prob.cpu()
         if not isinstance(estimator, SupervisedEstimator):
@@ -91,14 +112,47 @@ def compare_joint_prob(args, estimator, test_dataloader, data_generator):
                 x='label', y='prob')
     plt.show()
 
+def plot_learned_kernel(args, estimator, test_dataloader, data_generator):
+    assert args.noise_input
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 6))
+    x = np.linspace(-0.1, 0.1, 1000)
+    y = np.linspace(-0.1, 0.1, 1000)
+    X, Y = np.meshgrid(x, y)
+    inputs = torch.from_numpy(np.vstack([X.ravel(), Y.ravel()]).T).float().to(torch.device('cuda'))
+    prob = estimator.get_prob(inputs).detach().cpu().numpy()
+    Z = prob.reshape(X.shape)
+    cf1 = ax1.contourf(X, Y, Z)
+    fig.colorbar(cf1, ax=ax1)
+    ax1.set_title('Learned kernel')
+    # ax1.colorbar()
+    dist = torch.distributions.normal.Normal(torch.tensor([0.0, 0.0]), torch.tensor([0.05, 0.05]))
+    true_prob = torch.prod(dist.log_prob(inputs.cpu()), dim=-1).detach().numpy()
+    true_z = true_prob.reshape(X.shape)
+    # ax.plot_surface(X, Y, Z)
+    cf2 = ax2.contourf(X, Y, true_z)
+    fig.colorbar(cf2, ax=ax2)
+    ax2.set_title('True kernel')
+    plt.show()
+
 
 def evaluation_saved_features(exp_dir):
     with open(os.path.join(exp_dir, 'args.json'), 'r') as json_file:
         args_dict = json.load(json_file)
     args = argparse.Namespace(**args_dict)
-    evaluate(args, exp_dir=exp_dir)
+    estimator, test_dataloader, data_generator = evaluate_helper(args, exp_dir=exp_dir)
+    compare_joint_prob(args, estimator, test_dataloader, data_generator)
+
+def evaluate_saved_single_networks(exp_dir):
+    with open(os.path.join(exp_dir, 'args.json'), 'r') as json_file:
+        args_dict = json.load(json_file)
+    args = argparse.Namespace(**args_dict)
+    estimator, test_dataloader, data_generator = evaluate_helper(args, exp_dir=exp_dir)
+    assert "single_network" in args.estimator
+    plot_learned_kernel(args, estimator, test_dataloader, data_generator)
+
 
 
 
 if __name__ == '__main__':
-    evaluation_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised/2024-05-23-11-11-45')
+    # evaluation_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised/2024-05-23-11-11-45')
+    evaluate_saved_single_networks('/log/NoisyPendulum/nce_single_network/useful_results/2024-05-27-13-35-29')

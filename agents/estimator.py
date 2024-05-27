@@ -1,8 +1,9 @@
 import torch
 import numpy as np
-from utils import MLP, LearnableRandomFeature
+from utils import MLP, LearnableRandomFeature, NormalizedMLP
 EPS = 1e-6
 from scipy.stats import norm
+import os
 
 class DensityEstimator(object):
     """
@@ -15,28 +16,18 @@ class DensityEstimator(object):
 
         hidden_dim = kwargs.get('hidden_dim', 256)
         hidden_depth = kwargs.get('hidden_depth', 2)
-        if kwargs.get('sigmoid_output', False):
-            self.phi = MLP(input_dim= state_dim + action_dim,
-                           hidden_dim=hidden_dim,
-                           hidden_depth=hidden_depth,
-                           output_dim=embedding_dim,
-                           output_mod=torch.nn.Sigmoid()).to(device=self.device)
-            self.mu = MLP(input_dim=state_dim,
-                          hidden_dim=hidden_dim,
-                          hidden_depth=hidden_depth,
-                          output_dim=embedding_dim,
-                          output_mod=torch.nn.Sigmoid()).to(device=self.device)
-        else:
-            self.phi = MLP(input_dim=state_dim + action_dim,
-                           hidden_dim=hidden_dim,
-                           hidden_depth=hidden_depth,
-                           output_dim=embedding_dim,
-                           output_mod=torch.nn.Softplus()).to(device=self.device)
-            self.mu = MLP(input_dim=state_dim,
-                          hidden_dim=hidden_dim,
-                          hidden_depth=hidden_depth,
-                          output_dim=embedding_dim,
-                          output_mod=torch.nn.Softplus()).to(device=self.device)
+        out_mod = torch.nn.Sigmoid() if kwargs.get('sigmoid_output', False) else torch.nn.Softplus()
+        self.phi = MLP(input_dim=state_dim + action_dim,
+                       hidden_dim=hidden_dim,
+                       hidden_depth=hidden_depth,
+                       output_dim=embedding_dim,
+                       output_mod=out_mod).to(device=self.device)
+        self.mu = MLP(input_dim=state_dim,
+                      hidden_dim=hidden_dim,
+                      hidden_depth=hidden_depth,
+                      output_dim=embedding_dim,
+                      output_mod=out_mod).to(device=self.device)
+
 
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -73,6 +64,18 @@ class DensityEstimator(object):
             return regularization_weights * regularization_loss
         else:
             return torch.tensor(0.) # todo: if we add device then remember to change here
+
+    def load(self, exp_dir):
+        self.phi.load_state_dict(torch.load(os.path.join(exp_dir, 'feature_phi.pth')))
+        self.mu.load_state_dict(torch.load(os.path.join(exp_dir, 'feature_mu.pth')))
+
+    def save(self, exp_dir):
+        # if 'rf' not in args.estimator:
+        torch.save(self.phi.state_dict(), os.path.join(exp_dir, 'feature_phi.pth'))
+        torch.save(self.mu.state_dict(), os.path.join(exp_dir, 'feature_mu.pth'))
+        # else:
+        #     torch.save(estimator.rf.state_dict(), os.path.join(exp_dir, 'rf.pth'))
+        #     torch.save(estimator.f.state_dict(), os.path.join(exp_dir, 'f.pth'))
 
 
 
@@ -226,8 +229,8 @@ class SupervisedLearnableRandomFeatureEstimator(object):
                                          batch_size=kwargs.get('train_batch_size', 512),
                                          device=self.device
                                          )
-
-        self.f = MLP(input_dim=state_dim + action_dim,
+        nets = MLP if kwargs.get('layer_normalization', False) else NormalizedMLP
+        self.f = nets(input_dim=state_dim + action_dim,
                      output_dim=state_dim,
                      hidden_dim=kwargs.get('hidden_dim', 256),
                      hidden_depth=kwargs.get('hidden_depth', 2),
@@ -251,7 +254,7 @@ class SupervisedLearnableRandomFeatureEstimator(object):
         phi_fsa = self.rf(fsa)
         phi_stp1 = self.rf(s_tp1)
 
-        prob = 64 * torch.mean(phi_fsa * phi_stp1, dim=-1)
+        prob = 128 * torch.mean(phi_fsa * phi_stp1, dim=-1)
         return prob
 
     def estimate(self, batch):
@@ -268,125 +271,10 @@ class SupervisedLearnableRandomFeatureEstimator(object):
         self.f_optimizer.step()
 
         info = {'est_loss': loss.item(),
-                'mean_predicted': torch.mean(prob.cpu()).item(),
-                'mean_true': torch.mean(labels.cpu()).item()}
-
-        return info
-
-
-class SupervisedSingleNetwork(object):
-
-    def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
-        self.device = torch.device(kwargs.get('device'))
-        self.f = MLP(input_dim=state_dim + action_dim + state_dim,
-                     output_dim=1,
-                     hidden_dim=kwargs.get('hidden_dim', 256),
-                     hidden_depth=kwargs.get('hidden_depth', 2),
-                     ).to(self.device)
-        # self.sigma = torch.nn.Parameter(torch.tensor(0.1))
-        # self.f = lambda x: 1 / (2 * np.pi * self.sigma ** 2) * torch.exp(-0.5 * torch.norm(x, dim=1) ** 2 / (self.sigma ** 2))
-        #
-        self.f_optimizer = torch.optim.Adam(self.f.parameters(),
-                                            lr=3e-4,
-                                            betas=(0.9, 0.999))
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-
-    def estimate(self, batch):
-        transition, labels = batch
-        mean = transition.mean(dim=1, keepdim=True)
-        std = transition.std(dim=1, keepdim=True)
-        normalized_data = (transition - mean) / std
-        prob = self.f(normalized_data)
-        loss_fn = torch.nn.MSELoss()
-        loss = loss_fn(prob, labels)
-        self.f_optimizer.zero_grad()
-        loss.backward()
-        self.f_optimizer.step()
-
-        info = {'est_loss': loss.item(),
                 'dist_predicted': prob.detach().cpu().numpy(),
-                'dist_true': labels.detach().cpu().numpy()}
+                'dist_true': labels.detach().cpu().numpy()
+                }
 
         return info
-
-    # def estimate(self, batch):
-    #     transition, labels = batch
-    #     transition = transition.cpu().numpy()
-    #     labels = labels.cpu().numpy()
-    #     st, at, s_tp1 = (transition[:, :self.state_dim],
-    #                      transition[:, self.state_dim:self.state_dim + self.action_dim],
-    #                     transition[:, self.state_dim + self.action_dim:])
-    #     th = st[:, 0]
-    #     thdot = st[:, 1]
-    #     max_speed = 8
-    #     max_torque = 2.0
-    #     dt = 0.05
-    #     g = 10.0
-    #     m = 1.0
-    #     l = 1.0
-    #     theta_ddot = 3 * g / (2 * l) * np.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
-    #     new_th = th + dt * thdot
-    #     new_thdot = thdot + dt * theta_ddot
-    #     # new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
-    #     new_thdot = np.clip(new_thdot, -max_speed, max_speed)
-    #     f_sa = np.vstack([new_th, new_thdot]).T
-    #     noise = s_tp1 - f_sa
-    #     dens = norm.pdf(noise, loc = [0.0, 0.0], scale=[0.05, 0.05])
-    #     dens_joint = np.prod(dens, axis=1)
-    #
-    #     loss = np.mean((dens_joint - labels) ** 2)
-    #
-    #     info = {'est_loss': loss,
-    #             # 'dist_predicted': prob.detach().cpu().numpy(),
-    #             # 'dist_true': labels.detach().cpu().numpy()
-    #             }
-    #
-    #     return info
-
-    # def estimate(self, batch):
-    #     transition, labels = batch
-    #     transition = transition.cpu().numpy()
-    #     # labels = labels.cpu().numpy()
-    #     st, at, s_tp1 = (transition[:, :self.state_dim],
-    #                      transition[:, self.state_dim:self.state_dim + self.action_dim],
-    #                     transition[:, self.state_dim + self.action_dim:])
-    #     th = st[:, 0]
-    #     thdot = st[:, 1]
-    #     max_speed = 8
-    #     max_torque = 2.0
-    #     dt = 0.05
-    #     g = 10.0
-    #     m = 1.0
-    #     l = 1.0
-    #     theta_ddot = 3 * g / (2 * l) * np.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
-    #     new_th = th + dt * thdot
-    #     new_thdot = thdot + dt * theta_ddot
-    #     # new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
-    #     new_thdot = np.clip(new_thdot, -max_speed, max_speed)
-    #     f_sa = np.vstack([new_th, new_thdot]).T
-    #     noise = s_tp1 - f_sa
-    #
-    #     prob = self.f(torch.from_numpy(20 * noise).to(self.device)).squeeze()
-    #
-    #     loss_fn = torch.nn.MSELoss()
-    #     loss = loss_fn(prob, labels)
-    #     add_loss = torch
-    #     # loss = np.mean((dens_joint - labels) ** 2)
-    #     self.f_optimizer.zero_grad()
-    #     loss.backward()
-    #     self.f_optimizer.step()
-    #     # print(self.sigma)
-    #
-    #     info = {'est_loss': loss,
-    #             'dist_predicted': prob.detach().cpu().numpy(),
-    #             'dist_true': labels.detach().cpu().numpy()
-    #             }
-    #
-    #     return info
-
-
-
-
 
 
