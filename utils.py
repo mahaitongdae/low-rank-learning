@@ -5,7 +5,10 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 from torch import nn
+import torch.nn.functional as F
 
+LOG_SIG_MAX = 2
+LOG_SIG_MIN = -20
 
 class TransitionDataset(Dataset):
     def __init__(self, file_path=None, data=None, device=None):
@@ -77,8 +80,15 @@ class MLP(nn.Module):
         if preprocess == 'norm':
             self.preprocess = torch.nn.BatchNorm1d(input_dim)
         elif preprocess == 'scale':
-            self.preprocess = lambda x: 20 * x
-        elif preprocess == 'none':
+            if input_dim == 2:
+                self.preprocess = lambda x: 20 * x
+            elif input_dim == 5:
+                self.preprocess = lambda x: torch.tensor([1 /np.pi, 1/8., 1 / 2., 1 /np.pi, 1/8.],
+                                                         device=torch.device('cuda')) * x
+        elif preprocess == 'diff_scale':
+            self.preprocess = lambda x: torch.tensor([1 /np.pi, 1/8., 1 / 2., 20., 20.,],
+                                                         device=torch.device('cuda')) * x
+        elif preprocess == 'none' or preprocess is None:
             self.preprocess = lambda x: x
         else:
             raise NotImplementedError('preprocess not implemented')
@@ -103,6 +113,67 @@ class NormalizedMLP(nn.Module):
     def forward(self, x):
         x = self.batch_norm(x)
         return self.trunk(x)
+
+class Encoder(nn.Module):
+    def __init__(self,input_dim,
+                 hidden_dim,
+                 output_dim,
+                 hidden_depth=2,):
+        super(Encoder, self).__init__()
+        self.l1 = nn.Linear(input_dim, hidden_dim)
+        self.l2 = nn.Linear(hidden_dim, hidden_dim)
+
+        self.mean_linear = nn.Linear(hidden_dim, output_dim)
+        self.log_std_linear = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, input):
+
+        z = F.elu(self.l1(input))
+        z = F.elu(self.l2(z))
+        mean = self.mean_linear(z)
+        log_std = self.log_std_linear(z)
+        log_std = torch.clamp(log_std, min=LOG_SIG_MIN, max=LOG_SIG_MAX)
+
+        return mean, log_std
+
+    def sample(self, input):
+        """
+        """
+        mean, log_std = self.forward(input)
+        std = log_std.exp()
+        normal = torch.distributions.Normal(mean, std)
+        z = normal.rsample()  # reparameterization
+        return z
+
+class Decoder(nn.Module):
+  """
+  Deterministic decoder (Gaussian with identify covariance)
+
+  z -> s for conditional models
+  z -> x for common models.
+  """
+  def __init__(
+    self,
+    output_dim,
+    feature_dim=256,
+    hidden_dim=256,):
+
+    super(Decoder, self).__init__()
+
+    self.l1 = nn.Linear(feature_dim, hidden_dim)
+    self.state_linear = nn.Linear(hidden_dim, output_dim)
+    # self.reward_linear = nn.Linear(hidden_dim, 1)
+
+
+  def forward(self, feature):
+    """
+    Decode an input feature to observation
+    """
+    x = F.relu(self.l1(feature)) #F.relu(self.l1(feature))
+    s = self.state_linear(x)
+    # r = self.reward_linear(x)
+    return s # , r
+
 
 class LearnableRandomFeature(nn.Module):
     def __init__(self,

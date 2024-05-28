@@ -126,7 +126,7 @@ def plot_learned_kernel(args, estimator, test_dataloader, data_generator):
     ax1.set_title('Learned kernel')
     # ax1.colorbar()
     dist = torch.distributions.normal.Normal(torch.tensor([0.0, 0.0]), torch.tensor([0.05, 0.05]))
-    true_prob = torch.prod(dist.log_prob(inputs.cpu()), dim=-1).detach().numpy()
+    true_prob = torch.prod(torch.exp(dist.log_prob(inputs.cpu())), dim=-1).detach().numpy()
     true_z = true_prob.reshape(X.shape)
     # ax.plot_surface(X, Y, Z)
     cf2 = ax2.contourf(X, Y, true_z)
@@ -155,4 +155,4 @@ def evaluate_saved_single_networks(exp_dir):
 
 if __name__ == '__main__':
     # evaluation_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised/2024-05-23-11-11-45')
-    evaluate_saved_single_networks('/log/NoisyPendulum/nce_single_network/useful_results/2024-05-27-13-35-29')
+    evaluate_saved_single_networks('/log/NoisyPendulum/nce_single_network/useful_results/2024-05-27-13-47-37')

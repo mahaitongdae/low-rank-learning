@@ -10,14 +10,14 @@ import os
 from datetime import datetime
 import json
 import numpy as np
-from evaluation import evaluate
+# from evaluation import evaluate
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # Pipelines
     parser.add_argument("--device", default='cuda', type=str)
-    parser.add_argument("--train_batches", default=50000, type=int)
+    parser.add_argument("--train_batches", default=10000, type=int)
     parser.add_argument("--train_batch_size", default=512, type=int)
 
     # Tasks
@@ -26,31 +26,37 @@ if __name__ == '__main__':
     parser.add_argument("--sample", default='gaussian', type=str,
                         help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
     parser.add_argument("--sin_cos_obs", action='store_true')
-    parser.set_defaults(sin_cos_obs=True)
+    parser.set_defaults(sin_cos_obs=False)
+    parser.add_argument("--prob_labels", default='joint', type=str,
+                        help="what probability returned by data generators. joint for P(s, a, sprime) and " +
+                        "conditional for P(sprime | s, a)")
 
     ## Sanity check arguments
     parser.add_argument("--layer_normalization", action='store_true')
-    parser.set_defaults(layer_normalization=True)
+    parser.set_defaults(layer_normalization=False)
+    parser.add_argument("--preprocess", default='none', type=str)
 
     ## Estimators general
-    parser.add_argument('--estimator', default='supervised_rf', type=str)
-    parser.add_argument('--feature_dim', default=1024, type=int)
-    parser.add_argument('--hidden_dim', default=1024, type=int)
+    parser.add_argument('--estimator', default='mle', type=str)
+
+    parser.add_argument('--feature_dim', default=512, type=int)
+    parser.add_argument('--hidden_dim', default=256, type=int)
     parser.add_argument('--hidden_depth', default=2, type=int)
     parser.add_argument('--logprob_regularization', action='store_true')
-    parser.set_defaults(logprob_regularization=True)
+    parser.set_defaults(logprob_regularization=False)
     parser.add_argument("--logprob_regularization_weights", default=1., type=float)
     parser.add_argument("--integral_normalization", action='store_true')
-    parser.set_defaults(integral_normalization=False)
-    parser.add_argument("--integral_normalization_weights", default=10, type=float)
+    parser.set_defaults(integral_normalization=True)
+    parser.add_argument("--integral_normalization_weights", default=1., type=float)
 
     # MLE
     parser.add_argument('--sigmoid_output', action='store_true')
     parser.set_defaults(sigmoid_output=False)
 
     # NCE
-    parser.add_argument("--nce_loss", default='self_contrastive', type=str,
+    parser.add_argument("--nce_loss", default='ranking', type=str,
                         help="loss function for noise contrastive learning, either binary or ranking or self_contrastive.")
+    parser.add_argument("--nce_lr", default=1e-4, type=float)
     parser.add_argument("--noise_dist", default='uniform', type=str,
                         help="noise distribution")
     parser.add_argument("--num_classes", default=5, type=int,
@@ -70,14 +76,14 @@ if __name__ == '__main__':
     ### set env and collect data
 
     if args.dynamics == 'NoisyPendulum':
-        data_generator = ParallelNoisyPendulum(sigma=args.sigma)
+        data_generator = ParallelNoisyPendulum(sigma=args.sigma, sin_cos_obs=args.sin_cos_obs, prob=args.prob_labels)
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets',dist=args.sample)
     else:
         raise NotImplementedError
-    if not args.estimator.startswith('supervised'):
-        dataset = TransitionDataset(data=dataset, device=torch.device(args.device))
-    else:
-        dataset = LabeledTransitionDataset(data=dataset, prob=prob, device=torch.device(args.device))
+    # if not args.estimator.startswith('supervised'):
+    #     dataset = TransitionDataset(data=dataset, device=torch.device(args.device))
+    # else:
+    dataset = LabeledTransitionDataset(data=dataset, prob=prob, device=torch.device(args.device))
 
     ### initial training
 

@@ -31,10 +31,10 @@ if __name__ == '__main__':
 
     ## Sanity check arguments
     parser.add_argument("--noise_input", action='store_true')
-    parser.set_defaults(noise_input=True)
+    parser.set_defaults(noise_input=False)
     # parser.add_argument("--layer_normalization", action='store_true')
     # parser.set_defaults(layer_normalization=False)
-    parser.add_argument("--preprocess", default='scale', type=str)
+    parser.add_argument("--preprocess", default='diff_scale', type=str)
     parser.add_argument("--output_log_prob", action='store_true')
     parser.set_defaults(output_log_prob=True)
     parser.add_argument("--true_parametric_model", action='store_true')
@@ -47,7 +47,7 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_depth', default=2, type=int)
 
     ## Estimators and regularization
-    parser.add_argument('--estimator', default='nce_single_network', type=str)
+    parser.add_argument('--estimator', default='supervised_single_network', type=str)
     parser.add_argument('--logprob_regularization', action='store_true')
     parser.set_defaults(logprob_regularization=False)
     parser.add_argument("--logprob_regularization_weights", default=1., type=float)
@@ -60,7 +60,7 @@ if __name__ == '__main__':
     parser.set_defaults(sigmoid_output=False)
 
     # NCE
-    parser.add_argument("--nce_loss", default='binary', type=str,
+    parser.add_argument("--nce_loss", default='ranking', type=str,
                         help="loss function for noise contrastive learning, either binary or ranking or self_contrastive.")
     parser.add_argument("--noise_dist", default='uniform', type=str,
                         help="noise distribution")

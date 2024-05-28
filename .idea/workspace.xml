@@ -4,8 +4,14 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="95eba3a7-0c30-4445-a61e-e4b1bc3ffae9" name="Changes" comment="add sanity check, need improvements">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    <list default="true" id="95eba3a7-0c30-4445-a61e-e4b1bc3ffae9" name="Changes" comment="pass sanity check on single nn">
+      <change beforePath="$PROJECT_DIR$/agents/estimator.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/estimator.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/single_network_estimator.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/single_network_estimator.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/envs/noisy_pendulum.py" beforeDir="false" afterPath="$PROJECT_DIR$/envs/noisy_pendulum.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/evaluation.py" beforeDir="false" afterPath="$PROJECT_DIR$/evaluation.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main_sanity.py" beforeDir="false" afterPath="$PROJECT_DIR$/main_sanity.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -15,8 +21,8 @@
   <component name="FileTemplateManagerImpl">
     <option name="RECENT_TEMPLATES">
       <list>
-        <option value="Python Script" />
         <option value="Jupyter Notebook" />
+        <option value="Python Script" />
       </list>
     </option>
   </component>
@@ -46,19 +52,20 @@
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
+    "Python.estimator.executor": "Run",
     "Python.evaluation.executor": "Run",
     "Python.main.executor": "Run",
-    "Python.main_sanity.executor": "Debug",
+    "Python.main_sanity.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "git-widget-placeholder": "master",
-    "last_opened_file_path": "/home/haitong/PycharmProjects/low_rank_learning",
+    "last_opened_file_path": "/home/haitong/PycharmProjects/low_rank_learning/main.py",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "PyScientificConfigurable",
-    "two.files.diff.last.used.file": "/home/haitong/PycharmProjects/low_rank_learning/evaluation.py",
+    "settings.editor.selected.configurable": "editor.preferences.completion",
+    "two.files.diff.last.used.file": "/home/haitong/PycharmProjects/low_rank_learning/main.py",
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
@@ -68,10 +75,37 @@
       <recent name="$PROJECT_DIR$/agents" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
-      <recent name="$PROJECT_DIR$" />
+      <recent name="$PROJECT_DIR$/log/NoisyPendulum/nce/useful_results" />
+      <recent name="$PROJECT_DIR$/log/NoisyPendulum/supervised/useful_results" />
+      <recent name="$PROJECT_DIR$/log/NoisyPendulum/supervised" />
+      <recent name="$PROJECT_DIR$/log/NoisyPendulum/supervised_single_network/useful_results" />
+      <recent name="$PROJECT_DIR$/log/NoisyPendulum/nce_single_network/useful_results" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.main_sanity">
+  <component name="RunManager" selected="Python.main">
+    <configuration name="estimator" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="low_rank_learning" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/agents" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/agents/estimator.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
     <configuration name="evaluation" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="low_rank_learning" />
       <option name="ENV_FILES" value="" />
@@ -143,8 +177,9 @@
     </configuration>
     <recent_temporary>
       <list>
-        <item itemvalue="Python.main_sanity" />
         <item itemvalue="Python.main" />
+        <item itemvalue="Python.estimator" />
+        <item itemvalue="Python.main_sanity" />
         <item itemvalue="Python.evaluation" />
       </list>
     </recent_temporary>
@@ -171,6 +206,7 @@
       <workItem from="1716145283409" duration="3020000" />
       <workItem from="1716221189658" duration="32303000" />
       <workItem from="1716387913653" duration="42473000" />
+      <workItem from="1716570194650" duration="49827000" />
     </task>
     <task id="LOCAL-00001" summary="init commit">
       <option name="closed" value="true" />
@@ -204,7 +240,23 @@
       <option name="project" value="LOCAL" />
       <updated>1716492910216</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="pass initial sanity check">
+      <option name="closed" value="true" />
+      <created>1716575773219</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1716575773219</updated>
+    </task>
+    <task id="LOCAL-00006" summary="pass sanity check on single nn">
+      <option name="closed" value="true" />
+      <created>1716831925541</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1716831925541</updated>
+    </task>
+    <option name="localTasksCounter" value="7" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -225,52 +277,55 @@
     <MESSAGE value="init commit" />
     <MESSAGE value="add evaluation nce self contrastive" />
     <MESSAGE value="add sanity check, need improvements" />
-    <option name="LAST_COMMIT_MESSAGE" value="add sanity check, need improvements" />
+    <MESSAGE value="pass initial sanity check" />
+    <MESSAGE value="pass sanity check on single nn" />
+    <option name="LAST_COMMIT_MESSAGE" value="pass sanity check on single nn" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
       <breakpoints>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/agents/estimator.py</url>
-          <line>166</line>
-          <option name="timeStamp" value="8" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/main.py</url>
-          <line>131</line>
+          <line>142</line>
           <option name="timeStamp" value="11" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/agents/estimator.py</url>
-          <line>207</line>
+          <line>299</line>
           <option name="timeStamp" value="16" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/agents/estimator.py</url>
-          <line>249</line>
-          <option name="timeStamp" value="17" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/utils.py</url>
-          <line>99</line>
+          <line>168</line>
           <option name="timeStamp" value="18" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/agents/estimator.py</url>
-          <line>294</line>
-          <option name="timeStamp" value="22" />
+          <url>file://$PROJECT_DIR$/agents/single_network_estimator.py</url>
+          <line>252</line>
+          <option name="timeStamp" value="39" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/evaluation.py</url>
+          <line>128</line>
+          <option name="timeStamp" value="42" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/agents/estimator.py</url>
-          <line>330</line>
-          <option name="timeStamp" value="23" />
+          <line>259</line>
+          <option name="timeStamp" value="44" />
         </line-breakpoint>
       </breakpoints>
     </breakpoint-manager>
+    <watches-manager>
+      <configuration name="PythonConfigurationType">
+        <watch expression="new_state[0]" language="Python" />
+      </configuration>
+    </watches-manager>
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/low_rank_learning$main_sanity.coverage" NAME="main_sanity Coverage Results" MODIFIED="1716492094112" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/low_rank_learning$evaluation.coverage" NAME="evaluation Coverage Results" MODIFIED="1716478961426" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/low_rank_learning$main.coverage" NAME="main Coverage Results" MODIFIED="1716485716581" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/low_rank_learning$main_sanity.coverage" NAME="main_sanity Coverage Results" MODIFIED="1716835136626" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/low_rank_learning$evaluation.coverage" NAME="evaluation Coverage Results" MODIFIED="1716832201776" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/low_rank_learning$estimator.coverage" NAME="estimator Coverage Results" MODIFIED="1716843450303" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/agents" />
+    <SUITE FILE_PATH="coverage/low_rank_learning$main.coverage" NAME="main Coverage Results" MODIFIED="1716854508233" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>

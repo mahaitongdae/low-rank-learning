@@ -101,7 +101,7 @@ class noisyPendulumEnv(gym.Env):
         max_episode_steps = 200,euler = False):
         self.max_speed = 8
         self.max_torque = 2.0
-        self.dt = 0.05
+        self.dt = 0.2
         self.g = g
         self.m = 1.0
         self.l = 1.0
@@ -322,7 +322,7 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
     Data collection environment for parallel environments
     """
 
-    def __init__(self, sigma=0.0, rollout_batch_size=512, sin_cos_obs=False):
+    def __init__(self, sigma=0.0, rollout_batch_size=512, sin_cos_obs=False, prob='conditional'):
         super().__init__(sigma=sigma)
         self.rollout_batch_size = rollout_batch_size
         self.sin_cos_obs = sin_cos_obs
@@ -331,6 +331,7 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         self.truncnorm_action = truncnorm(-0.5 * self.max_torque, 0.5 * self.max_torque)
         self.truncnorm_th = truncnorm(-np.pi +EPS, np.pi - EPS)
         self.truncnorm_thdot = truncnorm(-0.5 * self.max_speed, 0.5 * self.max_speed)
+        self.prob_label_type = prob
 
     def sample(self,
                batches=200,
@@ -348,10 +349,10 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
             elif dist == 'uniform_sin_theta':
                 th, thdot = self.unifrom_sin_theta_sample()
             elif dist == 'gaussian':
-                th, thdot = self.truncated_gaussian_sample()
+                th, thdot, prob_st = self.truncated_gaussian_sample()
             else:
                 raise NotImplementedError
-            action = self.truncated_gaussian_action_sample()
+            action, prob_at = self.truncated_gaussian_action_sample()
             new_th, new_thdot = self.batch_step(th, thdot, action)
 
             # add noise
@@ -364,11 +365,14 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
             corrected_noise = noisy_new_state - new_state
             obs_t = self.get_obs(th, thdot)
             obs_tp1 = self.get_obs(noisy_new_state[:, 0], noisy_new_state[:, 1])
-            prob = self.get_prob(corrected_noise)
+            condi_prob = self.get_prob(corrected_noise)
 
             batch = np.hstack([obs_t, action[:, np.newaxis], obs_tp1])
             dataset[ptr:ptr + self.rollout_batch_size] = batch
-            prob_set[ptr:ptr + self.rollout_batch_size] = prob
+            if self.prob_label_type == 'conditional':
+                prob_set[ptr:ptr + self.rollout_batch_size] = condi_prob
+            elif self.prob_label_type == 'joint':
+                prob_set[ptr:ptr + self.rollout_batch_size] = prob_st * prob_at * condi_prob
             ptr += self.rollout_batch_size
             seed += 1
 
@@ -394,11 +398,15 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
 
     def truncated_gaussian_sample(self):
         th = self.truncnorm_th.rvs(size=self.rollout_batch_size)
+        prob_th = self.truncnorm_th.pdf(th)
         thdot = self.truncnorm_thdot.rvs(size=self.rollout_batch_size)
-        return th, thdot
+        prob_thdot = self.truncnorm_thdot.pdf(thdot)
+        return th, thdot, prob_th * prob_thdot
 
     def truncated_gaussian_action_sample(self):
-        return self.truncnorm_action.rvs(size=self.rollout_batch_size)
+        actions = self.truncnorm_action.rvs(size=self.rollout_batch_size)
+        prob = self.truncnorm_thdot.pdf(actions)
+        return actions, prob
 
     def get_noise(self):
         # if self.sigma != 0.0:

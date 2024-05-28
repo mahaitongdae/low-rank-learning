@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from utils import MLP, LearnableRandomFeature, NormalizedMLP
+from utils import MLP, LearnableRandomFeature, NormalizedMLP, Encoder, Decoder
 EPS = 1e-6
 from scipy.stats import norm
 import os
@@ -36,16 +36,11 @@ class SingleNetworkDensityEstimator(object):
                           output_mod=output_mod
                           ).to(self.device)
 
-            if kwargs.get('nce_loss', None) == 'binary':
-                self.c = torch.nn.Parameter(torch.tensor([0.], device=self.device))
-                self.f_optimizer = torch.optim.Adam([{'params':self.f.parameters()},
-                                                            {'params':(self.c)}],
-                                                    lr=3e-4,
-                                                    betas=(0.9, 0.999))
-            else:
-                self.f_optimizer = torch.optim.Adam(self.f.parameters(),
-                                                    lr=3e-4,
-                                                    betas=(0.9, 0.999))
+
+            # else:
+            self.f_optimizer = torch.optim.Adam(self.f.parameters(),
+                                                lr=3e-4,
+                                                betas=(0.9, 0.999))
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.kwargs = kwargs
@@ -146,10 +141,10 @@ class SupervisedSingleNetwork(SingleNetworkDensityEstimator):
             inputs = self.get_noise_with_model(transition)
         else:
             inputs = transition
-        prob = self.f(20 * inputs).squeeze()
+        prob = self.get_prob(inputs).squeeze()
 
         loss_fn = torch.nn.MSELoss()
-        loss = loss_fn(prob, labels)
+        loss = loss_fn(prob, labels / 64)
         self.f_optimizer.zero_grad()
         loss.backward()
         self.f_optimizer.step()
@@ -175,6 +170,11 @@ class NCESingleNetwork(SingleNetworkDensityEstimator):
         if self.kwargs.get('nce_loss', None) == 'binary':
             assert self.kwargs.get('output_log_prob', False)
             self.nce_loss_fn = self._binaryClassificationLoss
+            self.c = torch.nn.Parameter(torch.tensor([0.], device=self.device))
+            self.f_optimizer = torch.optim.Adam([{'params':self.f.parameters()},
+                                                        {'params':(self.c)}],
+                                                lr=3e-4,
+                                                betas=(0.9, 0.999))
         elif self.kwargs.get('nce_loss', None) == 'ranking':
             self.nce_loss_fn = self._rankingClassificationLoss
         else:
@@ -187,6 +187,11 @@ class NCESingleNetwork(SingleNetworkDensityEstimator):
             inputs = self.get_noise_with_model(transition)
         else:
             inputs = transition
+
+            if self.kwargs.get('preprocess', None) == 'diff_scale':
+                diff_state = transition[:, self.state_dim + self.action_dim:] - transition[:, :self.state_dim]
+                inputs = torch.vstack([transition[:, :self.state_dim + self.action_dim], diff_state])
+
         nce_loss = self.nce_loss_fn(inputs)
         log_prob = torch.log(self.get_prob(inputs))
         reg_norm_loss = self.normalize_or_regularize(log_prob)
@@ -228,7 +233,7 @@ class NCESingleNetwork(SingleNetworkDensityEstimator):
             # prob_noise_negative = torch.prod(torch.exp(self.noise_dist.log_prob(noise)), 1)
             # evidence = evidence + torch.div(prob_negative, prob_noise_negative)
         inputs_combined = torch.vstack(inputs_list)
-        log_prob_positive = self.get_log_prob(inputs_combined)
+        log_prob_positive = self.get_log_prob(inputs_combined).squeeze()
         log_prob_noise = torch.prod(self.noise_dist.log_prob(inputs_combined), dim=1)
         logits = log_prob_positive - log_prob_noise
         labels_combined = torch.cat(labels_list).to(self.device)
@@ -316,6 +321,114 @@ class MLESingleNetwork(SingleNetworkDensityEstimator):
             print('nan or inf detected')
         ranking_loss = -1 * torch.mean(torch.log(conditional))
         return ranking_loss
+
+class VBSingleNetwork(SingleNetworkDensityEstimator):
+
+    def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
+        super(VBSingleNetwork, self).__init__(embedding_dim, state_dim, action_dim, **kwargs)
+        input_dim = state_dim if kwargs.get('noise_input', False) else state_dim + action_dim + state_dim
+        self.encoder = Encoder(input_dim=input_dim,
+                               hidden_dim=kwargs.get('hidden_dim', 256),
+                               output_dim=embedding_dim,
+                               hidden_depth=kwargs.get('hidden_depth', 2),)
+        self.decoder = Decoder(output_dim=1,
+                               hidden_dim=kwargs.get('hidden_dim', 256),
+                               feature_dim=embedding_dim,)
+
+        self.vae_optimizer = torch.optim.Adam(list(self.encoder.parameters()) + list(self.decoder.parameters()), lr=3e-4,
+                                              betas=(0.9, 0.999))
+        output_mod = None if kwargs.get('output_log_prob', False) else torch.nn.Softplus()
+
+        self.f = MLP(input_dim=embedding_dim,
+                     output_dim=1,
+                     hidden_dim=kwargs.get('hidden_dim', 256),
+                     hidden_depth=kwargs.get('hidden_depth', 2),
+                     preprocess=kwargs.get('preprocess', None),
+                     output_mod=output_mod
+                     ).to(self.device)
+        # else:
+        self.f_optimizer = torch.optim.Adam(self.f.parameters(),
+                                            lr=3e-4,
+                                            betas=(0.9, 0.999))
+
+        self.mse_loss = torch.nn.MSELoss()
+        # self.z_prior =
+
+    def get_prob(self, inputs):
+        z = self.encoder.sample(inputs)
+        return torch.exp(self.f(z)) if self.kwargs.get('output_log_prob', False) else self.f(z)
+
+    def vb_loss(self, inputs):
+        """
+        KL(q(z\mid X=x) || q(z)) = KL(N(mu, sigma) || N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
+
+        Parameters
+        ----------
+        inputs
+
+        Returns
+        -------
+
+        """
+        z = self.encoder.sample(inputs)
+        x = self.decoder(z)
+
+        reconstuction_loss = self.mse_loss(x, inputs)
+        mean, log_std = self.encoder(inputs)
+        log_var = 2 * log_std
+        kl_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mean ** 2 - log_var.exp(), dim = 1), dim = 0)
+        return reconstuction_loss, kl_loss
+
+    def estimate(self, batch):
+        transition, labels = batch
+        transition = transition
+        if self.kwargs.get("noise_input", False):
+            inputs = self.get_noise_with_model(transition)
+        else:
+            inputs = transition
+
+            if self.kwargs.get('preprocess', None) == 'diff_scale':
+                diff_state = transition[:, self.state_dim + self.action_dim:] - transition[:, :self.state_dim]
+                inputs = torch.vstack([transition[:, :self.state_dim + self.action_dim], diff_state])
+
+        # feature step
+        recon_loss, kl_loss = self.vb_loss(inputs)
+        vae_loss = recon_loss + kl_loss
+
+        loss = vae_loss
+        # info.update({})
+        self.vae_optimizer.zero_grad()
+        loss.backward()
+        self.f_optimizer.step()
+        # print(self.sigma)
+
+        info = {'est_loss': vae_loss.item(),
+                'recon_loss' : recon_loss.item(),
+                'kl_loss' : kl_loss.item(),
+                # 'dist_predicted': prob.detach().cpu().numpy(),
+                # 'dist_true': labels.detach().cpu().numpy()
+                }
+
+        # estimation step
+        features = self.encoder(inputs)
+        prob = self.f(features)
+        log_prob = torch.log(prob)
+        reg_norm_loss = self.normalize_or_regularize(log_prob)
+        mse_loss = self.mse_loss(prob, labels)
+        est_loss = mse_loss +reg_norm_loss
+        self.f_optimizer.zero_grad()
+        mse_loss.backward()
+        self.f_optimizer.step()
+
+        info.update({'mse_loss': mse_loss.item(),
+                     'reg_norm_loss': reg_norm_loss.item(),})
+
+        return info
+
+
+
+
+
 
 
 
