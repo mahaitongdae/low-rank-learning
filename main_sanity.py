@@ -6,7 +6,7 @@ from agents.estimator import (MLEEstimator,
                               NCEEstimator,
                               SupervisedEstimator,
                               SupervisedLearnableRandomFeatureEstimator)
-from agents.single_network_estimator import SupervisedSingleNetwork, NCESingleNetwork
+from agents.single_network_estimator import SupervisedSingleNetwork, NCESingleNetwork, MLESingleNetwork
 from tensorboardX import SummaryWriter
 import argparse
 import os
@@ -20,7 +20,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Pipelines
     parser.add_argument("--device", default='cuda', type=str)
-    parser.add_argument("--train_batches", default=10000, type=int)
+    parser.add_argument("--train_batches", default=5000, type=int)
     parser.add_argument("--train_batch_size", default=512, type=int)
 
     # Tasks
@@ -31,10 +31,10 @@ if __name__ == '__main__':
 
     ## Sanity check arguments
     parser.add_argument("--noise_input", action='store_true')
-    parser.set_defaults(noise_input=False)
+    parser.set_defaults(noise_input=True)
     # parser.add_argument("--layer_normalization", action='store_true')
     # parser.set_defaults(layer_normalization=False)
-    parser.add_argument("--preprocess", default='diff_scale', type=str)
+    parser.add_argument("--preprocess", default='scale', type=str)
     parser.add_argument("--output_log_prob", action='store_true')
     parser.set_defaults(output_log_prob=True)
     parser.add_argument("--true_parametric_model", action='store_true')
@@ -47,22 +47,22 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_depth', default=2, type=int)
 
     ## Estimators and regularization
-    parser.add_argument('--estimator', default='supervised_single_network', type=str)
+    parser.add_argument('--estimator', default='mle_single_network', type=str)
     parser.add_argument('--logprob_regularization', action='store_true')
     parser.set_defaults(logprob_regularization=False)
     parser.add_argument("--logprob_regularization_weights", default=1., type=float)
     parser.add_argument("--integral_normalization", action='store_true')
-    parser.set_defaults(integral_normalization=False)
-    parser.add_argument("--integral_normalization_weights", default=10, type=float)
+    parser.set_defaults(integral_normalization=True)
+    parser.add_argument("--integral_normalization_weights", default=0.0001, type=float)
 
     # MLE
     parser.add_argument('--sigmoid_output', action='store_true')
     parser.set_defaults(sigmoid_output=False)
 
     # NCE
-    parser.add_argument("--nce_loss", default='ranking', type=str,
+    parser.add_argument("--nce_loss", default='binary', type=str,
                         help="loss function for noise contrastive learning, either binary or ranking or self_contrastive.")
-    parser.add_argument("--noise_dist", default='uniform', type=str,
+    parser.add_argument("--noise_dist", default='ranking', type=str,
                         help="noise distribution")
     parser.add_argument("--num_classes", default=5, type=int,
                         help="number of classes in the NCE, K in the paper.")
@@ -104,6 +104,12 @@ if __name__ == '__main__':
         #     raise NotImplementedError
         assert args.noise_input
         estimator = NCESingleNetwork(embedding_dim=args.feature_dim,
+                                 state_dim=data_generator.state_dim,
+                                 action_dim=1,
+                                 # noise_args=noise_args,
+                                 **vars(args))
+    elif args.estimator == 'mle_single_network':
+        estimator = MLESingleNetwork(embedding_dim=args.feature_dim,
                                  state_dim=data_generator.state_dim,
                                  action_dim=1,
                                  # noise_args=noise_args,

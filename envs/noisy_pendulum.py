@@ -101,7 +101,7 @@ class noisyPendulumEnv(gym.Env):
         max_episode_steps = 200,euler = False):
         self.max_speed = 8
         self.max_torque = 2.0
-        self.dt = 0.2
+        self.dt = 0.05
         self.g = g
         self.m = 1.0
         self.l = 1.0

@@ -8,7 +8,7 @@ from utils import LabeledTransitionDataset
 from torch.utils.data import DataLoader
 import argparse
 from agents.estimator import NCEEstimator, MLEEstimator, SupervisedEstimator
-from agents.single_network_estimator import NCESingleNetwork, SupervisedSingleNetwork
+from agents.single_network_estimator import NCESingleNetwork, SupervisedSingleNetwork, MLESingleNetwork
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
@@ -48,6 +48,12 @@ def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=N
                                             state_dim=3,
                                             action_dim=1,
                                             **vars(args))
+        elif args.estimator == 'mle_single_network':
+            estimator = MLESingleNetwork(embedding_dim=args.feature_dim,
+                                         state_dim=data_generator.state_dim,
+                                         action_dim=1,
+                                         # noise_args=noise_args,
+                                         **vars(args))
         elif args.estimator == 'nce_single_network':
             # if args.noise_dist == 'gaussian':
             #     noise_args = {'dist': "uniform",
@@ -155,4 +161,4 @@ def evaluate_saved_single_networks(exp_dir):
 
 if __name__ == '__main__':
     # evaluation_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised/2024-05-23-11-11-45')
-    evaluate_saved_single_networks('/log/NoisyPendulum/nce_single_network/useful_results/2024-05-27-13-47-37')
+    evaluate_saved_single_networks('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/mle_single_network/2024-05-30-00-09-55')

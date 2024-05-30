@@ -20,11 +20,11 @@ class SingleNetworkDensityEstimator(object):
             else:
                 self.f = lambda x: 1 / (2 * np.pi * self.sigma ** 2) * torch.exp(
                     -0.5 * torch.norm(x, dim=1) ** 2 / (self.sigma ** 2))
-            self.c = torch.nn.Parameter(torch.tensor(0., device=self.device))
+            # self.c = torch.nn.Parameter(torch.tensor(0., device=self.device))
             self.f_optimizer = torch.optim.Adam(
-                [self.sigma, self.c],
+                [self.sigma], # , self.c
                 # self.f.parameters(),
-                lr=1e-3,
+                lr=1e-4,
                 betas=(0.9, 0.999))
         else:
             output_mod = None if kwargs.get('output_log_prob', False) else torch.nn.Softplus()
@@ -47,6 +47,10 @@ class SingleNetworkDensityEstimator(object):
 
     def get_prob(self, inputs):
         return torch.exp(self.f(inputs)) if self.kwargs.get('output_log_prob', False) else self.f(inputs)
+
+    def get_log_prob(self, inputs):
+        return self.f(inputs) if self.kwargs.get('output_log_prob', False) else torch.log(self.f(inputs))
+
 
     def ground_truth_estimate(self, batch):
         transition, labels = batch
@@ -164,17 +168,21 @@ class NCESingleNetwork(SingleNetworkDensityEstimator):
         super().__init__(embedding_dim, state_dim, action_dim, **kwargs)
         # use biased normal as noise distribution
         self.noise_dist = torch.distributions.normal.Normal(loc = torch.tensor([0., 0.]).to(self.device),
-                                                              scale= torch.tensor([0.07, 0.07]).to(self.device))
+                                                              scale= torch.tensor([0.1, 0.1]).to(self.device))
 
         self.K = self.kwargs.get('num_classes', 1)
         if self.kwargs.get('nce_loss', None) == 'binary':
-            assert self.kwargs.get('output_log_prob', False)
             self.nce_loss_fn = self._binaryClassificationLoss
             self.c = torch.nn.Parameter(torch.tensor([0.], device=self.device))
-            self.f_optimizer = torch.optim.Adam([{'params':self.f.parameters()},
-                                                        {'params':(self.c)}],
-                                                lr=3e-4,
-                                                betas=(0.9, 0.999))
+            if not self.kwargs.get('true_parametric_model', False):
+                assert self.kwargs.get('output_log_prob', False)
+
+                self.f_optimizer = torch.optim.Adam([{'params':self.f.parameters()},
+                                                            {'params':(self.c)}],
+                                                    lr=3e-4,
+                                                    betas=(0.9, 0.999))
+            else:
+                pass
         elif self.kwargs.get('nce_loss', None) == 'ranking':
             self.nce_loss_fn = self._rankingClassificationLoss
         else:
@@ -270,57 +278,34 @@ class MLESingleNetwork(SingleNetworkDensityEstimator):
 
     def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
         super().__init__(embedding_dim, state_dim, action_dim, **kwargs)
-        self.noise_args = self.kwargs.get('noise_args', {})
-        if self.noise_args.get('dist') == 'uniform':
-            uniform_scale = self.noise_args.get('uniform_scale')
-            uniform_scale = torch.tensor(uniform_scale).float()
-            self.noise_dist = torch.distributions.uniform.Uniform(low= (-1 - EPS) * uniform_scale.to(self.device),
-                                                                  high= (1 + EPS) * uniform_scale.to(self.device))
-        else:
-            raise NotImplementedError('noise dist for NCE not implemented')
 
     def estimate(self, batch):
         transition, labels = batch
-        transition = transition.cpu().numpy()
         if self.kwargs.get("noise_input", False):
             inputs = self.get_noise_with_model(transition)
         else:
             inputs = transition
-        prob = self.f(torch.from_numpy(20 * inputs).to(self.device)).squeeze()
-
-        loss_fn = torch.nn.MSELoss()
-        loss = loss_fn(prob, labels)
-        add_loss = torch
-        # loss = np.mean((dens_joint - labels) ** 2)
+        # prob = self.f(torch.from_numpy(20 * inputs).to(self.device)).squeeze()
+        log_prob = self.get_log_prob(inputs)
+        # loss_fn = torch.nn.MSELoss()
+        loss = -1 * torch.mean(log_prob)
+        reg_norm_loss = self.normalize_or_regularize(log_prob)
+        est_loss = loss + reg_norm_loss
         self.f_optimizer.zero_grad()
-        loss.backward()
+        est_loss.backward()
         self.f_optimizer.step()
         # print(self.sigma)
 
-        info = {'est_loss': loss,
-                'dist_predicted': prob.detach().cpu().numpy(),
-                'dist_true': labels.detach().cpu().numpy()
+        info = {'est_loss': loss.item(),
+                'dist_predicted': torch.exp(log_prob).detach().cpu().numpy(),
+                'dist_true': labels.detach().cpu().numpy(),
+                'reg_norm_loss':reg_norm_loss.item()
                 }
 
+        if self.kwargs.get('true_parametric_model', False):
+            info.update({'sigma': self.sigma.item()})
+
         return info
-
-    def _rankingClassificationLoss(self, inputs):
-        prob_positive = self.get_prob(inputs)
-        prob_noise_positive = torch.prod(torch.exp(self.noise_dist.log_prob(inputs)), 1)
-
-        joint = torch.div(prob_positive, prob_noise_positive)
-        evidence = torch.div(prob_positive, prob_noise_positive)
-        for k in range(self.K):
-            noise = self.noise_dist.sample([len(inputs)]) # only numbers of samples in the batch
-            prob_negative = self.get_prob(st_at, noise)
-            prob_noise_negative = torch.prod(torch.exp(self.noise_dist.log_prob(noise)), 1)
-            evidence = evidence + torch.div(prob_negative, prob_noise_negative)
-
-        conditional = torch.div(joint, evidence)
-        if torch.isnan(conditional).any() or torch.isinf(conditional).any():
-            print('nan or inf detected')
-        ranking_loss = -1 * torch.mean(torch.log(conditional))
-        return ranking_loss
 
 class VBSingleNetwork(SingleNetworkDensityEstimator):
 
@@ -425,6 +410,32 @@ class VBSingleNetwork(SingleNetworkDensityEstimator):
 
         return info
 
+class ScoreMatchingSignleNetwork(SingleNetworkDensityEstimator):
+
+
+    def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
+        super(ScoreMatchingSignleNetwork, self).__init__(embedding_dim, state_dim, action_dim, **kwargs)
+
+    def estimate(self, batch):
+        transition, labels = batch
+        transition = transition.cpu().numpy()
+        if self.kwargs.get("noise_input", False):
+            inputs = self.get_noise_with_model(transition)
+        else:
+            inputs = transition
+        log_prob = self.get_log_prob(inputs).squeeze()
+
+        loss_fn = torch.nn.MSELoss()
+        loss = loss_fn(prob, labels)
+        self.f_optimizer.zero_grad()
+        loss.backward()
+        self.f_optimizer.step()
+        # print(self.sigma)
+
+        info = {'est_loss': loss,
+                'dist_predicted': prob.detach().cpu().numpy(),
+                'dist_true': labels.detach().cpu().numpy()
+                }
 
 
 
