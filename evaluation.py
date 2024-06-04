@@ -8,15 +8,19 @@ from utils import LabeledTransitionDataset
 from torch.utils.data import DataLoader
 import argparse
 from agents.estimator import NCEEstimator, MLEEstimator, SupervisedEstimator
-from agents.single_network_estimator import NCESingleNetwork, SupervisedSingleNetwork, MLESingleNetwork
+from agents.single_network_estimator import (NCESingleNetwork,
+                                             SupervisedSingleNetwork,
+                                             MLESingleNetwork,
+                                             ScoreMatchingSingleNetwork)
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
+
 def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=None, exp_dir=None):
     if test_dataloader is None:
         if args.dynamics == 'NoisyPendulum':
-            data_generator = ParallelNoisyPendulum(sigma=args.sigma)
+            data_generator = ParallelNoisyPendulum(sigma=args.sigma, sin_cos_obs=args.sin_cos_obs, prob=args.prob_labels)
             test_dataset, test_prob = data_generator.sample(batches=10, seed=201, non_zero_initial=True,
                                                             dist=args.sample)
             test_dataset = LabeledTransitionDataset(data=test_dataset, prob=test_prob, device=torch.device(args.device))
@@ -29,7 +33,7 @@ def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=N
     if estimator is None:
         if args.estimator == 'mle':
             estimator = MLEEstimator(embedding_dim=args.feature_dim,
-                                     state_dim=3,
+                                     state_dim=data_generator.state_dim,
                                      action_dim=1,
                                      **vars(args))
         elif args.estimator == 'nce':
@@ -39,13 +43,13 @@ def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=N
             else:
                 raise NotImplementedError
             estimator = NCEEstimator(embedding_dim=args.feature_dim,
-                                     state_dim=3,
+                                     state_dim=data_generator.state_dim,
                                      action_dim=1,
                                      noise_args=noise_args,
                                      **vars(args))
         elif args.estimator == 'supervised':
             estimator = SupervisedEstimator(embedding_dim=args.feature_dim,
-                                            state_dim=3,
+                                            state_dim=data_generator.state_dim,
                                             action_dim=1,
                                             **vars(args))
         elif args.estimator == 'mle_single_network':
@@ -71,6 +75,11 @@ def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=N
                                                 state_dim=data_generator.state_dim,
                                                 action_dim=1,
                                                 **vars(args))
+        elif args.estimator == 'score_matching_single_network':
+            estimator = ScoreMatchingSingleNetwork(embedding_dim=-1,
+                                                   state_dim=data_generator.state_dim,
+                                                   action_dim=1,
+                                                   **vars(args))
 
         else:
             raise NotImplementedError
@@ -118,7 +127,7 @@ def compare_joint_prob(args, estimator, test_dataloader, data_generator):
                 x='label', y='prob')
     plt.show()
 
-def plot_learned_kernel(args, estimator, test_dataloader, data_generator):
+def plot_learned_kernel_single_estimator(args, estimator, test_dataloader, data_generator):
     assert args.noise_input
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 6))
     x = np.linspace(-0.1, 0.1, 1000)
@@ -140,6 +149,17 @@ def plot_learned_kernel(args, estimator, test_dataloader, data_generator):
     ax2.set_title('True kernel')
     plt.show()
 
+def plot_learned_kernel_sas(args, estimator, test_dataloader, data_generator):
+    transition, label = next(iter(test_dataloader))
+    noise = estimator.get_noise_with_model(transition).detach().cpu().numpy()
+    prediction = estimator.get_prob(transition).detach().cpu().numpy()
+    fig = plt.figure(figsize=(10, 6))
+    ax1 = fig.add_subplot(121, projection='3d')
+    ax1.scatter(noise[:, 0], noise[:, 1], prediction)
+    ax2 = fig.add_subplot(122, projection='3d')
+    ax2.scatter(noise[:, 0], noise[:, 1], label.cpu().numpy())
+    plt.show()
+
 
 def evaluation_saved_features(exp_dir):
     with open(os.path.join(exp_dir, 'args.json'), 'r') as json_file:
@@ -154,11 +174,18 @@ def evaluate_saved_single_networks(exp_dir):
     args = argparse.Namespace(**args_dict)
     estimator, test_dataloader, data_generator = evaluate_helper(args, exp_dir=exp_dir)
     assert "single_network" in args.estimator
-    plot_learned_kernel(args, estimator, test_dataloader, data_generator)
+    plot_learned_kernel_single_estimator(args, estimator, test_dataloader, data_generator)
+
+def evaluate_saved_features(exp_dir):
+    with open(os.path.join(exp_dir, 'args.json'), 'r') as json_file:
+        args_dict = json.load(json_file)
+    args = argparse.Namespace(**args_dict)
+    estimator, test_dataloader, data_generator = evaluate_helper(args, exp_dir=exp_dir)
+    plot_learned_kernel_sas(args, estimator, test_dataloader, data_generator)
 
 
 
 
 if __name__ == '__main__':
-    # evaluation_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised/2024-05-23-11-11-45')
-    evaluate_saved_single_networks('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/mle_single_network/2024-05-30-00-09-55')
+    # evaluate_saved_single_networks('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/score_matching_single_network/2024-05-30-16-58-23')
+    evaluate_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/nce/2024-06-03-18-23-28')

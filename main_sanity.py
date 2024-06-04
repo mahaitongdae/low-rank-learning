@@ -6,7 +6,10 @@ from agents.estimator import (MLEEstimator,
                               NCEEstimator,
                               SupervisedEstimator,
                               SupervisedLearnableRandomFeatureEstimator)
-from agents.single_network_estimator import SupervisedSingleNetwork, NCESingleNetwork, MLESingleNetwork
+from agents.single_network_estimator import (SupervisedSingleNetwork,
+                                             NCESingleNetwork,
+                                             MLESingleNetwork,
+                                             ScoreMatchingSingleNetwork)
 from tensorboardX import SummaryWriter
 import argparse
 import os
@@ -47,13 +50,13 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_depth', default=2, type=int)
 
     ## Estimators and regularization
-    parser.add_argument('--estimator', default='mle_single_network', type=str)
+    parser.add_argument('--estimator', default='score_matching_single_network', type=str)
     parser.add_argument('--logprob_regularization', action='store_true')
-    parser.set_defaults(logprob_regularization=False)
-    parser.add_argument("--logprob_regularization_weights", default=1., type=float)
+    parser.set_defaults(logprob_regularization=True)
+    parser.add_argument("--logprob_regularization_weights", default=100., type=float)
     parser.add_argument("--integral_normalization", action='store_true')
-    parser.set_defaults(integral_normalization=True)
-    parser.add_argument("--integral_normalization_weights", default=0.0001, type=float)
+    parser.set_defaults(integral_normalization=False)
+    parser.add_argument("--integral_normalization_weights", default=1., type=float)
 
     # MLE
     parser.add_argument('--sigmoid_output', action='store_true')
@@ -119,6 +122,14 @@ if __name__ == '__main__':
                                             state_dim=data_generator.state_dim,
                                             action_dim=1,
                                             **vars(args))
+    elif args.estimator == 'score_matching_single_network':
+        estimator = ScoreMatchingSingleNetwork(embedding_dim=-1,
+                                               state_dim=data_generator.state_dim,
+                                               action_dim=1,
+                                               **vars(args))
+    else:
+        raise NotImplementedError
+
 
     for batch, transition in enumerate(train_dataloader):
         # for _ in range(5):

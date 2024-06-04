@@ -352,7 +352,7 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
                 th, thdot, prob_st = self.truncated_gaussian_sample()
             else:
                 raise NotImplementedError
-            action, prob_at = self.truncated_gaussian_action_sample()
+            action, prob_at = self.uniform_action_sample()
             new_th, new_thdot = self.batch_step(th, thdot, action)
 
             # add noise
@@ -392,9 +392,9 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         return th, theta_dot
 
     def uniform_action_sample(self):
-        return np.random.uniform(low=-self.max_torque,
-                                       high=self.max_torque,
-                                       size=self.rollout_batch_size)
+        return np.random.uniform(low=-0.5  * self.max_torque,
+                                       high=0.5  * self.max_torque,
+                                       size=self.rollout_batch_size), 1 / self.max_torque * np.ones((self.rollout_batch_size,))
 
     def truncated_gaussian_sample(self):
         th = self.truncnorm_th.rvs(size=self.rollout_batch_size)
@@ -409,9 +409,9 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         return actions, prob
 
     def get_noise(self):
-        # if self.sigma != 0.0:
         noise = np.random.normal(scale=self.sigma * self.dt, size=(self.rollout_batch_size, 2))
-        # new_state = new_state + noise
+        # noise = np.random.uniform(low=-0.6, high=0.6, size=(self.rollout_batch_size, 2))
+        # sample from uniform but give labels on normal
         return noise
 
     def get_prob(self, noise):
@@ -452,7 +452,7 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         th, thdot = initial_state[:, 0], initial_state[:, 1]
         return th, thdot
 
-    def get_true_marginal(self, st_at, dist='unifrom_theta'):
+    def get_true_marginal(self, st_at, dist='uniform_theta'):
         if dist == 'uniform_theta':
             sin_theta = st_at[:, 1]
             true_marginal = (1 / np.pi / 16) * np.reciprocal(np.sqrt(1 - sin_theta ** 2) + 1e-8)  # arcsine distribution

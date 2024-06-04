@@ -4,6 +4,7 @@ from utils import MLP, LearnableRandomFeature, NormalizedMLP, Encoder, Decoder
 EPS = 1e-6
 from scipy.stats import norm
 import os
+from torch.func import vmap, jacrev, functional_call, hessian
 
 class SingleNetworkDensityEstimator(object):
 
@@ -410,32 +411,49 @@ class VBSingleNetwork(SingleNetworkDensityEstimator):
 
         return info
 
-class ScoreMatchingSignleNetwork(SingleNetworkDensityEstimator):
+class ScoreMatchingSingleNetwork(SingleNetworkDensityEstimator):
 
 
     def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
-        super(ScoreMatchingSignleNetwork, self).__init__(embedding_dim, state_dim, action_dim, **kwargs)
+        super(ScoreMatchingSingleNetwork, self).__init__(embedding_dim, state_dim, action_dim, **kwargs)
+
 
     def estimate(self, batch):
         transition, labels = batch
-        transition = transition.cpu().numpy()
+        transition = transition
         if self.kwargs.get("noise_input", False):
             inputs = self.get_noise_with_model(transition)
         else:
             inputs = transition
-        log_prob = self.get_log_prob(inputs).squeeze()
+        def get_log_prob(inputs):
+            log_prob = self.get_log_prob(inputs).squeeze()
+            return log_prob
+        jac = vmap(jacrev(get_log_prob))(inputs)
+        hessians = vmap(hessian(get_log_prob))(inputs)
+        # more on the torch.func and computing batch jacobian and hessian can see
+        # https://pytorch.org/docs/stable/generated/torch.func.jacrev.html
+        # https://discuss.pytorch.org/t/computing-batch-jacobian-efficiently/80771/6
+        score_matching_loss = 0.5 * torch.norm(jac, dim=1).mean() + vmap(torch.trace)(hessians).mean()
 
-        loss_fn = torch.nn.MSELoss()
-        loss = loss_fn(prob, labels)
+        log_prob = self.get_log_prob(inputs)
+        reg_norm_loss = self.normalize_or_regularize(log_prob)
+        loss = score_matching_loss + reg_norm_loss
+
+        # loss_fn = torch.nn.MSELoss()
+        # loss = loss_fn(prob, labels)
         self.f_optimizer.zero_grad()
         loss.backward()
         self.f_optimizer.step()
         # print(self.sigma)
 
-        info = {'est_loss': loss,
-                'dist_predicted': prob.detach().cpu().numpy(),
-                'dist_true': labels.detach().cpu().numpy()
+        info = {'est_loss': score_matching_loss.item(),
+                'dist_predicted': self.get_prob(inputs).detach().cpu().numpy(),
+                'dist_true': labels.detach().cpu().numpy(),
+                'reg_norm_loss': reg_norm_loss.item(),
                 }
+
+        return info
+
 
 
 

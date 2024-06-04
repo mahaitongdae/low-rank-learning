@@ -7,6 +7,9 @@ import os
 
 torch.autograd.set_detect_anomaly(True)
 
+LOG_PROB_MIN = -10
+LOG_PROB_MAX = 6
+
 class DensityEstimator(object):
     """
 	General class for density estimator P(s' | s, a)
@@ -46,12 +49,13 @@ class DensityEstimator(object):
     def estimate(self, batch):
         raise NotImplementedError
 
-    def get_prob(self, st_at, s_tp1):
-
+    def get_prob(self, transition):
+        st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
+                        transition[:, self.state_dim + self.action_dim:])
         # phi_sa = 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
         # mu_stp1 = 1 / (self.embedding_dim ** 0.5) * self.mu(s_tp1)
-        phi_sa = 1 / (self.embedding_dim) * self.phi(st_at)
-        mu_stp1 = 1 / (self.embedding_dim) * self.mu(s_tp1)
+        phi_sa = 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
+        mu_stp1 = 1 / (self.embedding_dim ** 0.5) * self.mu(s_tp1)
         prob = torch.sum(phi_sa * mu_stp1, dim=-1)
 
         return torch.clamp(prob, min=1e-6) # clamping for numerical stability
@@ -83,6 +87,27 @@ class DensityEstimator(object):
         #     torch.save(estimator.rf.state_dict(), os.path.join(exp_dir, 'rf.pth'))
         #     torch.save(estimator.f.state_dict(), os.path.join(exp_dir, 'f.pth'))
 
+    def get_noise_with_model(self, transition):
+        st, at, s_tp1 = (transition[:, :self.state_dim],
+                         transition[:, self.state_dim:self.state_dim + self.action_dim],
+                         transition[:, self.state_dim + self.action_dim:])
+        th = st[:, 0]
+        thdot = st[:, 1]
+        max_speed = 8
+        max_torque = 2.0
+        dt = 0.05
+        g = 10.0
+        m = 1.0
+        l = 1.0
+        theta_ddot = 3 * g / (2 * l) * torch.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
+        new_th = th + dt * thdot
+        new_thdot = thdot + dt * theta_ddot
+        # new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
+        new_thdot = torch.clamp(new_thdot, -max_speed, max_speed)
+        f_sa = torch.vstack([new_th, new_thdot]).T
+        noise = s_tp1 - f_sa
+        return noise
+
 
 
 class MLEEstimator(DensityEstimator):
@@ -101,9 +126,9 @@ class MLEEstimator(DensityEstimator):
 
         transition, labels = batch
         info = {}
-        st_at, s_tp1 = (transition[:, :self.state_dim+self.action_dim],
-                        transition[:, self.state_dim + self.action_dim:])
-        prob = self.get_prob(st_at, s_tp1)
+        # st_at, s_tp1 = (transition[:, :self.state_dim+self.action_dim],
+        #                 transition[:, self.state_dim + self.action_dim:])
+        prob = self.get_prob(transition)
         log_prob = torch.log(prob)
         mle_loss = -1 * torch.mean(log_prob)
         info.update({'est_loss': mle_loss.item()})
@@ -135,14 +160,15 @@ class NCEEstimator(DensityEstimator):
         # if self.noise_args.get('dist') == 'uniform':
         #     uniform_scale = self.noise_args.get('uniform_scale')
         #     uniform_scale = torch.tensor(uniform_scale).float()
-        if kwargs.get('prob_labels', 'conditional') == 'joint':
-            self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0., 0., 0., 0., 0.]).to(self.device),
-                                                                scale=torch.tensor([1.0, 2.0, 1.0, 1.0, 2.0,]).to(self.device))
-        elif kwargs.get('prob_labels', 'conditional') == 'conditional':
-            self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0., 0.]).to(self.device),
-                                                                scale=torch.tensor([1.0, 2.0]).to(self.device))
-        else:
-            raise NotImplementedError('noise dist for NCE not implemented')
+        assert kwargs.get('prob_labels', 'joint') == 'conditional'
+        # if kwargs.get('prob_labels', 'conditional') == 'joint':
+        #     self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0., 0., 0., 0., 0.]).to(self.device),
+        #                                                         scale=torch.tensor([1.0, 2.0, 1.0, 1.0, 2.0,]).to(self.device))
+        # elif kwargs.get('prob_labels', 'conditional') == 'conditional':
+        self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0., 0.]).to(self.device),
+                                                            scale=torch.tensor([1.0, 2.0]).to(self.device))
+        # else:
+        #     raise NotImplementedError('noise dist for NCE not implemented')
 
         self.K = self.kwargs.get('num_classes', 1)
 
@@ -171,7 +197,7 @@ class NCEEstimator(DensityEstimator):
             raise NotImplementedError('NCE loss not implemented')
         info.update({'est_loss': nce_loss.item()})
 
-        prob = self.get_prob(st_at, s_tp1)
+        prob = self.get_prob(transition)
         log_prob = torch.log(prob)
         reg_norm_loss = self.normalize_or_regularize(log_prob)
         loss = nce_loss + reg_norm_loss
@@ -192,11 +218,11 @@ class NCEEstimator(DensityEstimator):
         return info
 
     def get_log_prob(self, inputs):
-        st_at, s_tp1 = (inputs[:, :self.state_dim + self.action_dim],
-                        inputs[:, self.state_dim + self.action_dim:])
-        prob = self.get_prob(st_at, s_tp1)
+        # st_at, s_tp1 = (inputs[:, :self.state_dim + self.action_dim],
+        #                 inputs[:, self.state_dim + self.action_dim:])
+        prob = self.get_prob(inputs)
         log_prob = torch.log(prob)
-        return log_prob
+        return torch.clamp(log_prob, min=LOG_PROB_MIN, max=LOG_PROB_MAX)
 
     def _binaryClassificationLoss(self, inputs):
         st_at, s_tp1 = (inputs[:, :self.state_dim + self.action_dim],
@@ -219,45 +245,24 @@ class NCEEstimator(DensityEstimator):
     def _rankingClassificationLoss(self, inputs):
         st_at, s_tp1 = (inputs[:, :self.state_dim + self.action_dim],
                         inputs[:, self.state_dim + self.action_dim:])
-        log_prob_positive = self.get_log_prob(inputs)
-        labels_list = [torch.ones(len(inputs))]
-        inputs_list = [inputs]
-        weights_list = [torch.ones(len(inputs))]
-        s_tp1s = [s_tp1]
+        # log_prob_positive = self.get_log_prob(inputs)
+        prob_positive = self.get_log_prob(inputs).squeeze()
+        log_noise_prob_positive = torch.prod(self.noise_dist.log_prob(s_tp1), dim=1)
+        probs_list = [prob_positive - log_noise_prob_positive] # prob_positive
         for k in range(self.K):
             noise = self.noise_dist.sample([len(inputs)])# only numbers of samples in the batch
-            if self.kwargs.get('prob_labels', 'conditional') == 'joint':
-                noised_transition = torch.clamp(noise, torch.tensor([-np.pi, -4.0, -1.5, -np.pi, -4.0], device=self.device),
-                                                 torch.tensor([np.pi, 4.0, 1.5, np.pi, 4.0], device=self.device))
-            elif self.kwargs.get('prob_labels', 'conditional') == 'conditional':
-                noised_transition = torch.vstack((st_at, noise))
-            else:
-                raise NotImplementedError('return prob types not implemented')
-            inputs_list.append(noised_transition)
-            labels_list.append(torch.zeros(len(inputs)))
-            weights_list.append(1 / self.K * torch.ones(len(inputs)))
-            s_tp1s.append(noise)
-            # prob_negative = self.get_prob(noise)
-            # prob_noise_negative = torch.prod(torch.exp(self.noise_dist.log_prob(noise)), 1)
-            # evidence = evidence + torch.div(prob_negative, prob_noise_negative)
-        inputs_combined = torch.vstack(inputs_list)
-        log_prob_positive = self.get_log_prob(inputs_combined).squeeze()
-        if self.kwargs.get('prob_labels', 'conditional') == 'joint':
-            log_prob_noise = torch.prod(self.noise_dist.log_prob(inputs_combined), dim=1)
-        elif self.kwargs.get('prob_labels', 'conditional') == 'conditional':
-            s_tp1s_combined = torch.vstack(s_tp1s)
-            log_prob_noise = torch.prod(self.noise_dist.log_prob(s_tp1s_combined), dim=1)
-        else:
-            raise NotImplementedError('return prob types not implemented')
-        logits = log_prob_positive - log_prob_noise
-        logits = torch.clamp(logits, -5., 5)
-        labels_combined = torch.cat(labels_list).to(self.device)
-        weights = torch.cat(weights_list).to(self.device)
-        loss_fn = torch.nn.BCEWithLogitsLoss(weight=weights)
+            # if self.kwargs.get('prob_labels', 'conditional') == 'joint':
+            #     noised_transition = torch.clamp(noise, torch.tensor([-np.pi, -4.0, -1.5, -np.pi, -4.0], device=self.device),
+            #                                      torch.tensor([np.pi, 4.0, 1.5, np.pi, 4.0], device=self.device))
+            # elif self.kwargs.get('prob_labels', 'conditional') == 'conditional':
+            log_prob_noise = torch.prod(self.noise_dist.log_prob(noise), dim=1)
+            noised_transition = torch.hstack((st_at, noise))
+            # else:
+            #     raise NotImplementedError('return prob types not implemented')
+            probs_list.append(self.get_log_prob(noised_transition).squeeze() - log_prob_noise)
 
-        ranking_loss = loss_fn(logits, labels_combined)
-        if torch.isnan(ranking_loss):
-            print('nan detected')
+        probs_for_soft_max = torch.vstack(probs_list).T
+        ranking_loss = torch.mean( - prob_positive + log_noise_prob_positive + torch.logsumexp(probs_for_soft_max, dim=1))
         return ranking_loss
 
     def _self_contrastive_loss(self, st_at, s_tp1):
@@ -292,9 +297,9 @@ class SupervisedEstimator(DensityEstimator):
     def estimate(self, batch):
 
         transition, labels = batch
-        st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
-                        transition[:, self.state_dim + self.action_dim:])
-        prob = self.get_prob(st_at, s_tp1)
+        # st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
+        #                 transition[:, self.state_dim + self.action_dim:])
+        prob = self.get_prob(transition)
         loss_fn = torch.nn.MSELoss()
         loss = loss_fn(prob, labels)
         self.phi_optimizer.zero_grad()
@@ -305,7 +310,8 @@ class SupervisedEstimator(DensityEstimator):
 
         info = {'est_loss': loss.item(),
                 'dist_predicted': prob.detach().cpu().numpy(),
-                'dist_true': labels.detach().cpu().numpy()
+                'dist_true': labels.detach().cpu().numpy(),
+                'dist_error': (prob - labels).detach().cpu().numpy()
                 }
 
         return info
@@ -330,10 +336,10 @@ class SupervisedLearnableRandomFeatureEstimator(object):
 
 
         self.rf_optimizer = torch.optim.Adam(params=self.rf.parameters(),
-                                              lr=1e-3,
+                                              lr=kwargs.get('lr', 1e-3),
                                               betas=(0.9, 0.999))
         self.f_optimizer = torch.optim.Adam(params=self.f.parameters(),
-                                             lr=1e-3,
+                                             lr=kwargs.get('lr', 1e-3),
                                              betas=(0.9, 0.999))
         self.kwargs = kwargs
 
@@ -364,9 +370,19 @@ class SupervisedLearnableRandomFeatureEstimator(object):
 
         info = {'est_loss': loss.item(),
                 'dist_predicted': prob.detach().cpu().numpy(),
-                'dist_true': labels.detach().cpu().numpy()
+                'dist_true': labels.detach().cpu().numpy(),
+                'dist_error': (prob-labels).detach().cpu().numpy()
                 }
 
         return info
+
+    def save(self, exp_dir):
+        # else:
+        torch.save(self.rf.state_dict(), os.path.join(exp_dir, 'rf.pth'))
+        torch.save(self.f.state_dict(), os.path.join(exp_dir, 'f.pth'))
+
+    def load(self, exp_dir):
+        self.rf.load_state_dict(torch.load(os.path.join(exp_dir, 'rf.pth')))
+        self.f.load_state_dict(torch.load(os.path.join(exp_dir, 'f.pth')))
 
 

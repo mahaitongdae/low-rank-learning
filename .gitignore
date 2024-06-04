@@ -254,3 +254,4 @@ cython_debug/
 .idea/*
 
 log/
+/data/

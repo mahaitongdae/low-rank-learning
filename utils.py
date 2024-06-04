@@ -187,7 +187,7 @@ class LearnableRandomFeature(nn.Module):
                  ):
         super().__init__()
         weights_dim = input_dim # TODO: we can also change here
-        self.n = torch.normal(0, 1., size=(output_dim, input_dim)).to(device) # RF dim * s_dim
+        self.n = torch.nn.Parameter(torch.normal(0, 1., size=(output_dim, input_dim), requires_grad=False).to(device)) # RF dim * s_dim
         self.trunk = mlp(input_dim, hidden_dim, input_dim, hidden_depth, output_mod)
         self.apply(weight_init)
         self.b = 2 * np.pi * torch.rand(size=(batch_size, output_dim)).to(device)

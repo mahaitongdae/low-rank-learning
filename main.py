@@ -17,37 +17,38 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Pipelines
     parser.add_argument("--device", default='cuda', type=str)
-    parser.add_argument("--train_batches", default=10000, type=int)
-    parser.add_argument("--train_batch_size", default=512, type=int)
+    parser.add_argument("--train_batches", default=50000, type=int)
+    parser.add_argument("--train_batch_size", default=1024, type=int)
 
     # Tasks
     parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
-    parser.add_argument('--sigma', default=1.0, type=float)
-    parser.add_argument("--sample", default='gaussian', type=str,
+    parser.add_argument('--sigma', default=4.0, type=float)
+    parser.add_argument("--sample", default='uniform_theta', type=str,
                         help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
     parser.add_argument("--sin_cos_obs", action='store_true')
     parser.set_defaults(sin_cos_obs=False)
-    parser.add_argument("--prob_labels", default='joint', type=str,
+    parser.add_argument("--prob_labels", default='conditional', type=str,
                         help="what probability returned by data generators. joint for P(s, a, sprime) and " +
                         "conditional for P(sprime | s, a)")
 
     ## Sanity check arguments
     parser.add_argument("--layer_normalization", action='store_true')
-    parser.set_defaults(layer_normalization=False)
+    parser.set_defaults(layer_normalization=True)
     parser.add_argument("--preprocess", default='none', type=str)
 
     ## Estimators general
-    parser.add_argument('--estimator', default='mle', type=str)
+    parser.add_argument('--estimator', default='nce', type=str)
+    parser.add_argument('--lr', default=3e-4, type=float)
 
-    parser.add_argument('--feature_dim', default=512, type=int)
-    parser.add_argument('--hidden_dim', default=256, type=int)
-    parser.add_argument('--hidden_depth', default=2, type=int)
+    parser.add_argument('--feature_dim', default=1024, type=int)
+    parser.add_argument('--hidden_dim', default=512, type=int)
+    parser.add_argument('--hidden_depth', default=3, type=int)
     parser.add_argument('--logprob_regularization', action='store_true')
     parser.set_defaults(logprob_regularization=False)
     parser.add_argument("--logprob_regularization_weights", default=1., type=float)
     parser.add_argument("--integral_normalization", action='store_true')
     parser.set_defaults(integral_normalization=True)
-    parser.add_argument("--integral_normalization_weights", default=1., type=float)
+    parser.add_argument("--integral_normalization_weights", default=0.1, type=float)
 
     # MLE
     parser.add_argument('--sigmoid_output', action='store_true')
@@ -56,10 +57,10 @@ if __name__ == '__main__':
     # NCE
     parser.add_argument("--nce_loss", default='ranking', type=str,
                         help="loss function for noise contrastive learning, either binary or ranking or self_contrastive.")
-    parser.add_argument("--nce_lr", default=1e-4, type=float)
+    parser.add_argument("--nce_lr", default=3e-5, type=float)
     parser.add_argument("--noise_dist", default='uniform', type=str,
                         help="noise distribution")
-    parser.add_argument("--num_classes", default=5, type=int,
+    parser.add_argument("--num_classes", default=3, type=int,
                         help="number of classes in the NCE, K in the paper.")
 
 
@@ -76,7 +77,10 @@ if __name__ == '__main__':
     ### set env and collect data
 
     if args.dynamics == 'NoisyPendulum':
-        data_generator = ParallelNoisyPendulum(sigma=args.sigma, sin_cos_obs=args.sin_cos_obs, prob=args.prob_labels)
+        data_generator = ParallelNoisyPendulum(sigma=args.sigma,
+                                               rollout_batch_size=args.train_batch_size,
+                                               sin_cos_obs=args.sin_cos_obs,
+                                               prob=args.prob_labels)
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets',dist=args.sample)
     else:
         raise NotImplementedError
