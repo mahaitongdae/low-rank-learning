@@ -1,4 +1,5 @@
 from envs.noisy_pendulum import ParallelNoisyPendulum
+from envs.mvn import MVN
 from utils import TransitionDataset, LabeledTransitionDataset
 import torch
 from torch.utils.data import DataLoader
@@ -17,11 +18,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Pipelines
     parser.add_argument("--device", default='cuda', type=str)
-    parser.add_argument("--train_batches", default=50000, type=int)
+    parser.add_argument("--train_batches", default=10000, type=int)
     parser.add_argument("--train_batch_size", default=1024, type=int)
 
     # Tasks
-    parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
+    parser.add_argument('--dynamics', default='mvn', type=str)
     parser.add_argument('--sigma', default=4.0, type=float)
     parser.add_argument("--sample", default='uniform_theta', type=str,
                         help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
@@ -82,6 +83,9 @@ if __name__ == '__main__':
                                                sin_cos_obs=args.sin_cos_obs,
                                                prob=args.prob_labels)
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets',dist=args.sample)
+    elif args.dynamics == 'mvn':
+        data_generator = MVN(rollout_batch_size=args.train_batch_size,)
+        dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets')
     else:
         raise NotImplementedError
     # if not args.estimator.startswith('supervised'):
@@ -97,7 +101,7 @@ if __name__ == '__main__':
     if args.estimator == 'mle':
         estimator = MLEEstimator(embedding_dim=args.feature_dim,
                                  state_dim=data_generator.state_dim,
-                                 action_dim=1,
+                                 action_dim=data_generator.action_dim,
                                  **vars(args))
     elif args.estimator == 'nce':
         if args.noise_dist == 'uniform':
@@ -107,18 +111,18 @@ if __name__ == '__main__':
             raise NotImplementedError
         estimator = NCEEstimator(embedding_dim=args.feature_dim,
                                  state_dim=data_generator.state_dim,
-                                 action_dim=1,
+                                 action_dim=data_generator.action_dim,
                                  noise_args=noise_args,
                                  **vars(args))
     elif args.estimator == 'supervised':
         estimator = SupervisedEstimator(embedding_dim=args.feature_dim,
                                         state_dim=data_generator.state_dim,
-                                        action_dim=1,
+                                        action_dim=data_generator.action_dim,
                                         **vars(args))
     elif args.estimator == 'supervised_rf':
         estimator = SupervisedLearnableRandomFeatureEstimator(embedding_dim=args.feature_dim,
                                                               state_dim=data_generator.state_dim,
-                                                              action_dim=1,
+                                                              action_dim=data_generator.action_dim,
                                                               **vars(args))
     else:
         raise NotImplementedError

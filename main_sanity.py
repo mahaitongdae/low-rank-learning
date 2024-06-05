@@ -86,6 +86,7 @@ if __name__ == '__main__':
     if args.dynamics == 'NoisyPendulum':
         data_generator = ParallelNoisyPendulum(sigma=args.sigma)
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets',dist=args.sample)
+
     else:
         raise NotImplementedError
     # if not args.estimator.startswith('supervised'):

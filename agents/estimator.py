@@ -165,8 +165,14 @@ class NCEEstimator(DensityEstimator):
         #     self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0., 0., 0., 0., 0.]).to(self.device),
         #                                                         scale=torch.tensor([1.0, 2.0, 1.0, 1.0, 2.0,]).to(self.device))
         # elif kwargs.get('prob_labels', 'conditional') == 'conditional':
-        self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0., 0.]).to(self.device),
-                                                            scale=torch.tensor([1.0, 2.0]).to(self.device))
+        if kwargs.get('dynamics') == 'noisy_pendulum':
+            self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0., 0.]).to(self.device),
+                                                                scale=torch.tensor([1.0, 2.0]).to(self.device))
+        elif kwargs.get('dynamics') == 'mvn':
+            self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0.], device=self.device),
+                                                                scale=torch.tensor([1.0], device=self.device))
+        else:
+            raise NotImplementedError
         # else:
         #     raise NotImplementedError('noise dist for NCE not implemented')
 
@@ -248,7 +254,7 @@ class NCEEstimator(DensityEstimator):
         # log_prob_positive = self.get_log_prob(inputs)
         prob_positive = self.get_log_prob(inputs).squeeze()
         log_noise_prob_positive = torch.prod(self.noise_dist.log_prob(s_tp1), dim=1)
-        probs_list = [prob_positive - log_noise_prob_positive] # prob_positive
+        probs_list = [] # prob_positive - log_noise_prob_positive
         for k in range(self.K):
             noise = self.noise_dist.sample([len(inputs)])# only numbers of samples in the batch
             # if self.kwargs.get('prob_labels', 'conditional') == 'joint':
