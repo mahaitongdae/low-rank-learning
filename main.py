@@ -22,7 +22,7 @@ if __name__ == '__main__':
     parser.add_argument("--train_batch_size", default=1024, type=int)
 
     # Tasks
-    parser.add_argument('--dynamics', default='mvn', type=str)
+    parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
     parser.add_argument('--sigma', default=4.0, type=float)
     parser.add_argument("--sample", default='uniform_theta', type=str,
                         help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
@@ -38,7 +38,7 @@ if __name__ == '__main__':
     parser.add_argument("--preprocess", default='none', type=str)
 
     ## Estimators general
-    parser.add_argument('--estimator', default='nce', type=str)
+    parser.add_argument('--estimator', default='supervised_rf', type=str)
     parser.add_argument('--lr', default=3e-4, type=float)
 
     parser.add_argument('--feature_dim', default=1024, type=int)
@@ -63,6 +63,10 @@ if __name__ == '__main__':
                         help="noise distribution")
     parser.add_argument("--num_classes", default=3, type=int,
                         help="number of classes in the NCE, K in the paper.")
+
+    # LearnableRF
+    parser.add_argument("--learnable_w", action='store_true')
+    parser.set_defaults(learnable_w=False)
 
 
     args = parser.parse_args()

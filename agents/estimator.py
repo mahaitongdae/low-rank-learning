@@ -61,6 +61,20 @@ class DensityEstimator(object):
         return torch.clamp(prob, min=1e-6) # clamping for numerical stability
         # return prob
 
+    def get_conditional_prob(self, transition):
+        """
+        get conditional probability given transition s,a,s'
+        Parameters
+        ----------
+        transition
+
+        Returns
+        -------
+
+        """
+        assert transition.shape[1] == 2
+        x1 = transition[:, 0]
+
     def normalize_or_regularize(self, log_prob):
         if self.kwargs.get('integral_normalization', False):
             norm_weights = self.kwargs.get('integral_normalization_weights', 1.)
@@ -331,6 +345,8 @@ class SupervisedLearnableRandomFeatureEstimator(object):
                                          hidden_dim=kwargs.get('hidden_dim', 256),
                                          hidden_depth=kwargs.get('hidden_depth', 2),
                                          batch_size=kwargs.get('train_batch_size', 512),
+                                         sigma=kwargs.get('sigma', 1.),
+                                         learnable_w=kwargs.get('learnable_w', True),
                                          device=self.device
                                          )
         nets = MLP if kwargs.get('layer_normalization', False) else NormalizedMLP
@@ -352,8 +368,43 @@ class SupervisedLearnableRandomFeatureEstimator(object):
         self.state_dim = state_dim
         self.action_dim = action_dim
 
+    def get_noise_with_model(self, transition):
+        """
+        Only for verification.
 
-    def get_prob(self, st_at, s_tp1):
+        Parameters
+        ----------
+        transition
+
+        Returns
+        -------
+
+        """
+
+        st, at, s_tp1 = (transition[:, :self.state_dim],
+                         transition[:, self.state_dim:self.state_dim + self.action_dim],
+                         transition[:, self.state_dim + self.action_dim:])
+        th = st[:, 0]
+        thdot = st[:, 1]
+        max_speed = 8
+        max_torque = 2.0
+        dt = 0.05
+        g = 10.0
+        m = 1.0
+        l = 1.0
+        theta_ddot = 3 * g / (2 * l) * torch.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
+        new_th = th + dt * thdot
+        new_thdot = thdot + dt * theta_ddot
+        # new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
+        new_thdot = torch.clamp(new_thdot, -max_speed, max_speed)
+        f_sa = torch.vstack([new_th, new_thdot]).T
+        noise = s_tp1 - f_sa
+        return noise
+
+
+    def get_prob(self, transition):
+        st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
+                        transition[:, self.state_dim + self.action_dim:])
         fsa = self.f(st_at)
         phi_fsa = self.rf(fsa)
         phi_stp1 = self.rf(s_tp1)
@@ -363,9 +414,7 @@ class SupervisedLearnableRandomFeatureEstimator(object):
 
     def estimate(self, batch):
         transition, labels = batch
-        st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
-                        transition[:, self.state_dim + self.action_dim:])
-        prob = self.get_prob(st_at, s_tp1)
+        prob = self.get_prob(transition)
         loss_fn = torch.nn.MSELoss()
         loss = loss_fn(prob, labels)
         self.rf_optimizer.zero_grad()

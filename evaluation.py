@@ -7,7 +7,7 @@ from envs.noisy_pendulum import ParallelNoisyPendulum
 from utils import LabeledTransitionDataset
 from torch.utils.data import DataLoader
 import argparse
-from agents.estimator import NCEEstimator, MLEEstimator, SupervisedEstimator
+from agents.estimator import NCEEstimator, MLEEstimator, SupervisedEstimator, SupervisedLearnableRandomFeatureEstimator
 from agents.single_network_estimator import (NCESingleNetwork,
                                              SupervisedSingleNetwork,
                                              MLESingleNetwork,
@@ -24,7 +24,7 @@ def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=N
             test_dataset, test_prob = data_generator.sample(batches=10, seed=201, non_zero_initial=True,
                                                             dist=args.sample)
             test_dataset = LabeledTransitionDataset(data=test_dataset, prob=test_prob, device=torch.device(args.device))
-            test_dataloader = DataLoader(test_dataset, batch_size=512, shuffle=True)
+            test_dataloader = DataLoader(test_dataset, batch_size=args.train_batch_size, shuffle=True)
         else:
             raise NotImplementedError
     else:
@@ -52,6 +52,11 @@ def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=N
                                             state_dim=data_generator.state_dim,
                                             action_dim=1,
                                             **vars(args))
+        elif args.estimator == 'supervised_rf':
+            estimator = SupervisedLearnableRandomFeatureEstimator(embedding_dim=args.feature_dim,
+                                                                  state_dim=data_generator.state_dim,
+                                                                  action_dim=data_generator.action_dim,
+                                                                  **vars(args))
         elif args.estimator == 'mle_single_network':
             estimator = MLESingleNetwork(embedding_dim=args.feature_dim,
                                          state_dim=data_generator.state_dim,
@@ -190,4 +195,4 @@ def evaluate_saved_features(exp_dir):
 
 if __name__ == '__main__':
     # evaluate_saved_single_networks('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/score_matching_single_network/2024-05-30-16-58-23')
-    evaluate_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/nce/2024-06-03-18-23-28')
+    evaluate_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised_rf/2024-06-11-22-54-59')
