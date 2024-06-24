@@ -4,6 +4,7 @@ from utils import MLP, LearnableRandomFeature, NormalizedMLP
 EPS = 1e-6
 from scipy.stats import norm
 import os
+from torch.func import vmap
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -60,6 +61,35 @@ class DensityEstimator(object):
 
         return torch.clamp(prob, min=1e-6) # clamping for numerical stability
         # return prob
+
+    def get_conditional_prob_via_approx_normalization(self, transition):
+        st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
+                        transition[:, self.state_dim + self.action_dim:])
+        phi_sa = 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
+        prob = self.get_prob(transition)
+        if self.kwargs.get('dynamics') == 'mvn':  # only has this for mvn.
+            grid = np.linspace(-3, 3, 6 * 100)
+            grid_tensor = torch.from_numpy(grid).reshape(-1, 1).float().to(self.device)
+            mu_stp1_grid = 1 / (self.embedding_dim ** 0.5) * self.mu(grid_tensor)
+            normalization_mu = torch.sum(mu_stp1_grid, dim=0) / 100
+            def inner_prod(phi):
+                return torch.inner(phi, normalization_mu)
+
+            normalization = vmap(inner_prod)(phi_sa)
+            return torch.div(prob, normalization)
+        else:
+            raise NotImplementedError
+        # elif self.kwargs.get('dynamics') == 'noisy_pendulum':
+        #     grid_1d = np.linspace(-1.2, 1.2, 120)
+        #     grids = np.meshgrid(grid_1d, grid_1d)
+        #     grid_flatten = np.vstack([np.ravel(grid) for grid in grids]).transpose()
+        #     grid_tensor = torch.from_numpy(grid_flatten).float().to(self.device)
+        #     mu_stp1_grid = 1 / (self.embedding_dim ** 0.5) * self.mu(grid_tensor)
+        #
+        #     def inner_prod
+
+
+
 
     def get_conditional_prob(self, transition):
         """
@@ -166,6 +196,25 @@ class MLEEstimator(DensityEstimator):
         return info
 
 
+class L2NormEstimator(DensityEstimator):
+
+    def __init__(self,embedding_dim, state_dim, action_dim, **kwargs):
+        super().__init__(embedding_dim, state_dim, action_dim, **kwargs)
+
+
+    def get_approximated_integral(self):
+        if self.kwargs.get('dynamics') == 'mvn':  # only has this for mvn.
+            grid = np.linspace(-3, 3, 6 * 100)
+            grid_tensor = torch.from_numpy(grid).reshape(-1, 1).float().to(self.device)
+            mu_stp1_grid = 1 / (self.embedding_dim ** 0.5) * self.mu(grid_tensor)
+            normalization_mu = torch.sum(mu_stp1_grid, dim=0) / 100
+
+            def inner_prod(phi):
+                return torch.inner(phi, normalization_mu)
+
+            normalization = vmap(inner_prod)(phi_sa)
+
+
 class NCEEstimator(DensityEstimator):
 
     def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
@@ -223,10 +272,11 @@ class NCEEstimator(DensityEstimator):
         loss = nce_loss + reg_norm_loss
         info.update({'reg_norm_loss': reg_norm_loss.item()})
 
-        mse_loss = self.mse_loss_fn(prob, labels)
+        condi_prob = self.get_conditional_prob_via_approx_normalization(transition)
+        mse_loss = self.mse_loss_fn(condi_prob, labels)
         info.update({'mse_loss': mse_loss.item(),
-                     'dist_predicted': prob.detach().cpu().numpy(),
-                     'dist_true': labels.detach().cpu().numpy()
+                     'dist_predicted_condi': condi_prob.detach().cpu().numpy(),
+                     'dist_true_condi': labels.detach().cpu().numpy()
                      })
 
         self.phi_optimizer.zero_grad()

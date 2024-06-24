@@ -1,5 +1,5 @@
 from envs.noisy_pendulum import ParallelNoisyPendulum
-from envs.mvn import MVN
+from envs.mvn import MVN, MVNUniform
 from utils import TransitionDataset, LabeledTransitionDataset
 import torch
 from torch.utils.data import DataLoader
@@ -22,7 +22,7 @@ if __name__ == '__main__':
     parser.add_argument("--train_batch_size", default=1024, type=int)
 
     # Tasks
-    parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
+    parser.add_argument('--dynamics', default='mvn', type=str)
     parser.add_argument('--sigma', default=4.0, type=float)
     parser.add_argument("--sample", default='uniform_theta', type=str,
                         help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
@@ -38,7 +38,7 @@ if __name__ == '__main__':
     parser.add_argument("--preprocess", default='none', type=str)
 
     ## Estimators general
-    parser.add_argument('--estimator', default='supervised_rf', type=str)
+    parser.add_argument('--estimator', default='nce', type=str)
     parser.add_argument('--lr', default=3e-4, type=float)
 
     parser.add_argument('--feature_dim', default=1024, type=int)
@@ -89,6 +89,9 @@ if __name__ == '__main__':
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets',dist=args.sample)
     elif args.dynamics == 'mvn':
         data_generator = MVN(rollout_batch_size=args.train_batch_size,)
+        dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets')
+    elif args.dynamics == 'mvn_uniform':
+        data_generator = MVNUniform(rollout_batch_size=args.train_batch_size,)
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets')
     else:
         raise NotImplementedError

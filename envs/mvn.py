@@ -44,3 +44,31 @@ class MVN(object):
             np.save(os.path.join(store_path, 'prob_normal.npy'), prob_set)
 
         return dataset, prob_set
+
+class MVNUniform(MVN):
+
+    def sample(self,batches=200, seed = 0, store_path=None):
+        ptr = 0
+        dataset = np.zeros((batches * self.rollout_batch_size, 2))
+        prob_set = np.zeros((batches * self.rollout_batch_size,))
+        for i in range(batches):
+            np.random.seed(seed)
+            x1 = np.random.uniform(low=-1,
+                                   high=1,
+                                   size=(self.rollout_batch_size,))
+
+            x2 = np.random.multivariate_normal(mean=0.5 * x1,
+                                                cov= 3 / 4 * np.eye(self.rollout_batch_size))
+            samples = np.vstack([x1, x2]).T
+            dataset[ptr: ptr + self.rollout_batch_size] = samples
+
+            prob = self.get_conditional_dist(samples=samples)
+            prob_set[ptr: ptr + self.rollout_batch_size] = prob
+            ptr += self.rollout_batch_size
+            seed += 1
+
+        if store_path is not None and isinstance(store_path, str):
+            np.save(os.path.join(store_path, 'tran_normal.npy'), dataset)
+            np.save(os.path.join(store_path, 'prob_normal.npy'), prob_set)
+
+        return dataset, prob_set

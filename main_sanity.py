@@ -1,4 +1,5 @@
 from envs.noisy_pendulum import ParallelNoisyPendulum
+from envs.mvn import MVN, MVNUniform
 from utils import TransitionDataset, LabeledTransitionDataset
 import torch
 from torch.utils.data import DataLoader
@@ -23,25 +24,26 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Pipelines
     parser.add_argument("--device", default='cuda', type=str)
-    parser.add_argument("--train_batches", default=5000, type=int)
+    parser.add_argument("--train_batches", default=10000, type=int)
     parser.add_argument("--train_batch_size", default=512, type=int)
 
     # Tasks
-    parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
+    parser.add_argument('--dynamics', default='mvn', type=str)
     parser.add_argument('--sigma', default=1.0, type=float)
     parser.add_argument("--sample", default='gaussian', type=str,
                         help="how the s, a distribution is sampled, uniform_theta, uniform_sin_theta, gaussian")
 
     ## Sanity check arguments
     parser.add_argument("--noise_input", action='store_true')
-    parser.set_defaults(noise_input=True)
+    parser.set_defaults(noise_input=False)
     # parser.add_argument("--layer_normalization", action='store_true')
     # parser.set_defaults(layer_normalization=False)
-    parser.add_argument("--preprocess", default='scale', type=str)
+    parser.add_argument("--preprocess", default='none', type=str)
     parser.add_argument("--output_log_prob", action='store_true')
     parser.set_defaults(output_log_prob=True)
     parser.add_argument("--true_parametric_model", action='store_true')
-    parser.set_defaults(true_parametric_model=False)
+    parser.set_defaults(true_parametric_model=True)
+    parser.add_argument("--true_parametric_model_type", default='conditional', type=str)
 
 
     ## Networks
@@ -50,9 +52,9 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_depth', default=2, type=int)
 
     ## Estimators and regularization
-    parser.add_argument('--estimator', default='score_matching_single_network', type=str)
+    parser.add_argument('--estimator', default='mle_single_network', type=str)
     parser.add_argument('--logprob_regularization', action='store_true')
-    parser.set_defaults(logprob_regularization=True)
+    parser.set_defaults(logprob_regularization=False)
     parser.add_argument("--logprob_regularization_weights", default=100., type=float)
     parser.add_argument("--integral_normalization", action='store_true')
     parser.set_defaults(integral_normalization=False)
@@ -86,7 +88,12 @@ if __name__ == '__main__':
     if args.dynamics == 'NoisyPendulum':
         data_generator = ParallelNoisyPendulum(sigma=args.sigma)
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets',dist=args.sample)
-
+    elif args.dynamics == 'mvn':
+        data_generator = MVN(rollout_batch_size=args.train_batch_size,)
+        dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets')
+    elif args.dynamics == 'mvn_uniform':
+        data_generator = MVNUniform(rollout_batch_size=args.train_batch_size,)
+        dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets')
     else:
         raise NotImplementedError
     # if not args.estimator.startswith('supervised'):
@@ -115,7 +122,7 @@ if __name__ == '__main__':
     elif args.estimator == 'mle_single_network':
         estimator = MLESingleNetwork(embedding_dim=args.feature_dim,
                                  state_dim=data_generator.state_dim,
-                                 action_dim=1,
+                                 action_dim=data_generator.action_dim,
                                  # noise_args=noise_args,
                                  **vars(args))
     elif args.estimator == 'supervised_single_network':

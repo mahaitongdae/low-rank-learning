@@ -12,12 +12,20 @@ class SingleNetworkDensityEstimator(object):
         self.device = torch.device(kwargs.get('device'))
         input_dim = state_dim if kwargs.get('noise_input', False) else state_dim + action_dim + state_dim
         if kwargs.get("true_parametric_model", False):
-            assert kwargs.get('noise_input', False)
+            # assert kwargs.get('noise_input', False)
             assert kwargs.get('preprocess', 'none') == 'none'
-            self.sigma = torch.nn.Parameter(torch.tensor(0.1))
             if kwargs.get('output_log_prob', False):
-                self.f = lambda x: torch.log(1 / (2 * np.pi * self.sigma ** 2) * torch.exp(
-                    -0.5 * torch.norm(x, dim=1) ** 2 / (self.sigma ** 2)))
+                if kwargs.get('true_parametric_model_type', None) == 'joint':
+                    self.sigma = torch.nn.Parameter(torch.eye(2))
+                    self.f = lambda x: torch.log(1 / (2 * np.pi * torch.linalg.det(self.sigma)) * torch.exp(
+                        -0.5 * torch.norm(x, dim=1) ** 2 / (self.sigma ** 2)))
+                elif kwargs.get('true_parametric_model_type', None) == 'conditional':
+                    self.sigma = torch.nn.Parameter(torch.tensor(1.0))
+                    self.mean_factor = torch.nn.Parameter(torch.tensor(0.5))
+                    self.f = lambda x: torch.log(1 / (np.sqrt(2 * np.pi) * self.sigma) * torch.exp(
+                        -0.5 * (x[:, 1] - self.mean_factor * x[:, 0]) ** 2 / (self.sigma)))
+                else:
+                    raise NotImplementedError("true_parametric_model type not implemented")
             else:
                 self.f = lambda x: 1 / (2 * np.pi * self.sigma ** 2) * torch.exp(
                     -0.5 * torch.norm(x, dim=1) ** 2 / (self.sigma ** 2))
@@ -305,6 +313,10 @@ class MLESingleNetwork(SingleNetworkDensityEstimator):
 
         if self.kwargs.get('true_parametric_model', False):
             info.update({'sigma': self.sigma.item()})
+            try:
+                info.update({'mean_factor': self.mean_factor.item()})
+            except:
+                pass
 
         return info
 
