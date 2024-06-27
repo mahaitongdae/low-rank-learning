@@ -23,7 +23,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # Pipelines
-    parser.add_argument("--device", default='cuda', type=str)
+    parser.add_argument("--device", default='mps', type=str)
     parser.add_argument("--train_batches", default=10000, type=int)
     parser.add_argument("--train_batch_size", default=512, type=int)
 

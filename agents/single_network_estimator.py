@@ -19,11 +19,13 @@ class SingleNetworkDensityEstimator(object):
                     self.sigma = torch.nn.Parameter(torch.eye(2))
                     self.f = lambda x: torch.log(1 / (2 * np.pi * torch.linalg.det(self.sigma)) * torch.exp(
                         -0.5 * torch.norm(x, dim=1) ** 2 / (self.sigma ** 2)))
+                    parameters = [self.sigma]
                 elif kwargs.get('true_parametric_model_type', None) == 'conditional':
                     self.sigma = torch.nn.Parameter(torch.tensor(1.0))
-                    self.mean_factor = torch.nn.Parameter(torch.tensor(0.5))
-                    self.f = lambda x: torch.log(1 / (np.sqrt(2 * np.pi) * self.sigma) * torch.exp(
+                    self.mean_factor = torch.nn.Parameter(torch.tensor(0.7))
+                    self.f = lambda x: torch.log(1 / (torch.sqrt(2 * np.pi * self.sigma)) * torch.exp(
                         -0.5 * (x[:, 1] - self.mean_factor * x[:, 0]) ** 2 / (self.sigma)))
+                    parameters = [self.sigma, self.mean_factor]
                 else:
                     raise NotImplementedError("true_parametric_model type not implemented")
             else:
@@ -31,7 +33,7 @@ class SingleNetworkDensityEstimator(object):
                     -0.5 * torch.norm(x, dim=1) ** 2 / (self.sigma ** 2))
             # self.c = torch.nn.Parameter(torch.tensor(0., device=self.device))
             self.f_optimizer = torch.optim.Adam(
-                [self.sigma], # , self.c
+                parameters,
                 # self.f.parameters(),
                 lr=1e-4,
                 betas=(0.9, 0.999))

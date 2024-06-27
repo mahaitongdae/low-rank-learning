@@ -19,7 +19,7 @@ class MVN(object):
         # conditional distribution is
         # \mu_{x2 | x1} = \mu_2 + E_{21} E_{11}^{-1}(x1-\mu_1) = 1 / 2 x1
         # Cov_{x2 | x1} = Cov_{22} - Cov_{21} Cov_{11}^{-1}Cov_{12} = 1 - 1/2*1/2 = 3/4
-        pdf = 4 / (3 * np.sqrt(2 * np.pi)) * np.exp(-0.5 * (x2 - 0.5 * x1 / (3 / 4)) ** 2)
+        pdf = 1 / (np.sqrt(2 * np.pi * 3 / 4)) * np.exp(-0.5 * (x2 - 0.5 * x1) ** 2 / (3 / 4))
         return pdf
 
 
