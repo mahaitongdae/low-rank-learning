@@ -23,12 +23,12 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # Pipelines
-    parser.add_argument("--device", default='mps', type=str)
+    parser.add_argument("--device", default='cuda', type=str)
     parser.add_argument("--train_batches", default=10000, type=int)
     parser.add_argument("--train_batch_size", default=512, type=int)
 
     # Tasks
-    parser.add_argument('--dynamics', default='mvn', type=str)
+    parser.add_argument('--dynamics', default='mvn_uniform', type=str)
     parser.add_argument('--sigma', default=1.0, type=float)
     parser.add_argument("--sample", default='gaussian', type=str,
                         help="how the s, a distribution is sampled, uniform_theta, uniform_sin_theta, gaussian")

@@ -40,6 +40,7 @@ class MVN(object):
             seed += 1
 
         if store_path is not None and isinstance(store_path, str):
+            os.makedirs(store_path, exist_ok=True)
             np.save(os.path.join(store_path, 'tran_normal.npy'), dataset)
             np.save(os.path.join(store_path, 'prob_normal.npy'), prob_set)
 
@@ -57,8 +58,7 @@ class MVNUniform(MVN):
                                    high=1,
                                    size=(self.rollout_batch_size,))
 
-            x2 = np.random.multivariate_normal(mean=0.5 * x1,
-                                                cov= 3 / 4 * np.eye(self.rollout_batch_size))
+            x2 = np.random.normal(loc=0.0, scale=np.sqrt(3 / 4), size=(self.rollout_batch_size,)) + 0.5 * x1
             samples = np.vstack([x1, x2]).T
             dataset[ptr: ptr + self.rollout_batch_size] = samples
 
