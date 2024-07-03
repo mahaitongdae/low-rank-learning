@@ -20,7 +20,7 @@ import pandas as pd
 def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=None, exp_dir=None):
     if test_dataloader is None:
         if args.dynamics == 'NoisyPendulum':
-            data_generator = ParallelNoisyPendulum(sigma=args.sigma, sin_cos_obs=args.sin_cos_obs, prob=args.prob_labels)
+            data_generator = ParallelNoisyPendulum(sigma=args.sigma)
             test_dataset, test_prob = data_generator.sample(batches=10, seed=201, non_zero_initial=True,
                                                             dist=args.sample)
             test_dataset = LabeledTransitionDataset(data=test_dataset, prob=test_prob, device=torch.device(args.device))
@@ -91,6 +91,7 @@ def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=N
 
     if exp_dir:
         estimator.load(exp_dir)
+        # estimator.c = -4.708
 
     return estimator, test_dataloader, data_generator
 
@@ -194,5 +195,5 @@ def evaluate_saved_features(exp_dir):
 
 
 if __name__ == '__main__':
-    # evaluate_saved_single_networks('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/score_matching_single_network/2024-05-30-16-58-23')
-    evaluate_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised_rf/2024-06-11-22-54-59')
+    evaluate_saved_single_networks('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/nce_single_network/2024-07-02-21-57-21')
+    # evaluate_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised_rf/2024-07-02-17-23-30')

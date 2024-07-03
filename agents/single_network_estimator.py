@@ -57,7 +57,7 @@ class SingleNetworkDensityEstimator(object):
         self.kwargs = kwargs
 
     def get_prob(self, inputs):
-        return torch.exp(self.f(inputs)) if self.kwargs.get('output_log_prob', False) else self.f(inputs)
+        return torch.exp(self.get_log_prob(inputs)) if self.kwargs.get('output_log_prob', False) else self.f(inputs)
 
     def get_log_prob(self, inputs):
         return self.f(inputs) if self.kwargs.get('output_log_prob', False) else torch.log(self.f(inputs))
@@ -179,7 +179,7 @@ class NCESingleNetwork(SingleNetworkDensityEstimator):
         super().__init__(embedding_dim, state_dim, action_dim, **kwargs)
         # use biased normal as noise distribution
         self.noise_dist = torch.distributions.normal.Normal(loc = torch.tensor([0., 0.]).to(self.device),
-                                                              scale= torch.tensor([0.1, 0.1]).to(self.device))
+                                                              scale= torch.tensor([0.07, 0.07]).to(self.device))
 
         self.K = self.kwargs.get('num_classes', 1)
         if self.kwargs.get('nce_loss', None) == 'binary':
@@ -270,7 +270,7 @@ class NCESingleNetwork(SingleNetworkDensityEstimator):
         labels = torch.cat((labels_pos, labels_neg)).to(self.device)
         inputs_combined = torch.vstack((inputs, noise))
         log_prob_positive = self.get_log_prob(inputs_combined).squeeze()
-        log_prob_noise = torch.prod(self.noise_dist.log_prob(inputs_combined), dim=1)
+        log_prob_noise = torch.sum(self.noise_dist.log_prob(inputs_combined), dim=1)
         logits = log_prob_positive - log_prob_noise
         loss_fn = torch.nn.BCEWithLogitsLoss()
         loss = loss_fn(logits, labels)

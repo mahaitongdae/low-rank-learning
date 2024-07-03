@@ -322,7 +322,7 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
     Data collection environment for parallel environments
     """
 
-    def __init__(self, sigma=0.0, rollout_batch_size=512, sin_cos_obs=False, prob='conditional'):
+    def __init__(self, sigma=0.0, rollout_batch_size=512, sin_cos_obs=False, prob='conditional', **kwargs):
         super().__init__(sigma=sigma)
         self.rollout_batch_size = rollout_batch_size
         self.sin_cos_obs = sin_cos_obs
@@ -332,6 +332,7 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         self.truncnorm_th = truncnorm(-np.pi +EPS, np.pi - EPS)
         self.truncnorm_thdot = truncnorm(-0.5 * self.max_speed, 0.5 * self.max_speed)
         self.prob_label_type = prob
+        self.args = kwargs
 
     def sample(self,
                batches=200,
@@ -377,6 +378,7 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
             seed += 1
 
         if store_path is not None and isinstance(store_path, str):
+            os.makedirs(store_path, exist_ok=True)
             np.save(os.path.join(store_path, 'tran_pendulum.npy'), dataset)
             np.save(os.path.join(store_path, 'prob_pendulum.npy'), prob_set)
 
@@ -409,9 +411,12 @@ class ParallelNoisyPendulum(noisyPendulumEnv):
         return actions, prob
 
     def get_noise(self):
-        noise = np.random.normal(scale=self.sigma * self.dt, size=(self.rollout_batch_size, 2))
-        # noise = np.random.uniform(low=-0.6, high=0.6, size=(self.rollout_batch_size, 2))
-        # sample from uniform but give labels on normal
+        if self.args.get("pendulum_noise_dist", 'gaussian') == 'gaussian':
+            noise = np.random.normal(scale=self.sigma * self.dt, size=(self.rollout_batch_size, 2))
+        elif self.args.get("pendulum_noise_dist", None) == 'uniform':
+            noise = np.random.uniform(low=-0.6, high=0.6, size=(self.rollout_batch_size, 2))
+        else:
+            raise NotImplementedError("pendulum_noise_dist not implemented")
         return noise
 
     def get_prob(self, noise):

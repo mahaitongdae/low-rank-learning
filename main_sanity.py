@@ -28,21 +28,21 @@ if __name__ == '__main__':
     parser.add_argument("--train_batch_size", default=512, type=int)
 
     # Tasks
-    parser.add_argument('--dynamics', default='mvn_uniform', type=str)
+    parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
     parser.add_argument('--sigma', default=1.0, type=float)
     parser.add_argument("--sample", default='gaussian', type=str,
                         help="how the s, a distribution is sampled, uniform_theta, uniform_sin_theta, gaussian")
 
     ## Sanity check arguments
     parser.add_argument("--noise_input", action='store_true')
-    parser.set_defaults(noise_input=False)
+    parser.set_defaults(noise_input=True)
     # parser.add_argument("--layer_normalization", action='store_true')
     # parser.set_defaults(layer_normalization=False)
-    parser.add_argument("--preprocess", default='none', type=str)
+    parser.add_argument("--preprocess", default='scale', type=str)
     parser.add_argument("--output_log_prob", action='store_true')
     parser.set_defaults(output_log_prob=True)
     parser.add_argument("--true_parametric_model", action='store_true')
-    parser.set_defaults(true_parametric_model=True)
+    parser.set_defaults(true_parametric_model=False)
     parser.add_argument("--true_parametric_model_type", default='conditional', type=str)
 
 
@@ -52,7 +52,7 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_depth', default=2, type=int)
 
     ## Estimators and regularization
-    parser.add_argument('--estimator', default='mle_single_network', type=str)
+    parser.add_argument('--estimator', default='nce_single_network', type=str)
     parser.add_argument('--logprob_regularization', action='store_true')
     parser.set_defaults(logprob_regularization=False)
     parser.add_argument("--logprob_regularization_weights", default=100., type=float)
@@ -67,7 +67,7 @@ if __name__ == '__main__':
     # NCE
     parser.add_argument("--nce_loss", default='binary', type=str,
                         help="loss function for noise contrastive learning, either binary or ranking or self_contrastive.")
-    parser.add_argument("--noise_dist", default='ranking', type=str,
+    parser.add_argument("--noise_dist", default='uniform', type=str,
                         help="noise distribution")
     parser.add_argument("--num_classes", default=5, type=int,
                         help="number of classes in the NCE, K in the paper.")

@@ -18,11 +18,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Pipelines
     parser.add_argument("--device", default='cuda', type=str)
-    parser.add_argument("--train_batches", default=10000, type=int)
+    parser.add_argument("--train_batches", default=20000, type=int)
     parser.add_argument("--train_batch_size", default=1024, type=int)
 
     # Tasks
-    parser.add_argument('--dynamics', default='mvn', type=str)
+    parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
     parser.add_argument('--sigma', default=4.0, type=float)
     parser.add_argument("--sample", default='uniform_theta', type=str,
                         help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
@@ -31,6 +31,8 @@ if __name__ == '__main__':
     parser.add_argument("--prob_labels", default='conditional', type=str,
                         help="what probability returned by data generators. joint for P(s, a, sprime) and " +
                         "conditional for P(sprime | s, a)")
+    parser.add_argument("--pendulum_noise_dist", default='gaussian', type=str,
+                        help="what is the noise distribution. be careful that this might be different with")
 
     ## Sanity check arguments
     parser.add_argument("--layer_normalization", action='store_true')
@@ -38,7 +40,7 @@ if __name__ == '__main__':
     parser.add_argument("--preprocess", default='none', type=str)
 
     ## Estimators general
-    parser.add_argument('--estimator', default='nce', type=str)
+    parser.add_argument('--estimator', default='supervised_rf', type=str)
     parser.add_argument('--lr', default=3e-4, type=float)
 
     parser.add_argument('--feature_dim', default=1024, type=int)
@@ -48,7 +50,7 @@ if __name__ == '__main__':
     parser.set_defaults(logprob_regularization=False)
     parser.add_argument("--logprob_regularization_weights", default=1., type=float)
     parser.add_argument("--integral_normalization", action='store_true')
-    parser.set_defaults(integral_normalization=True)
+    parser.set_defaults(integral_normalization=False)
     parser.add_argument("--integral_normalization_weights", default=0.1, type=float)
 
     # MLE
@@ -82,10 +84,12 @@ if __name__ == '__main__':
     ### set env and collect data
 
     if args.dynamics == 'NoisyPendulum':
-        data_generator = ParallelNoisyPendulum(sigma=args.sigma,
+        data_generator = ParallelNoisyPendulum(
+                                               # sigma=args.sigma,
                                                rollout_batch_size=args.train_batch_size,
-                                               sin_cos_obs=args.sin_cos_obs,
-                                               prob=args.prob_labels)
+                                               # sin_cos_obs=args.sin_cos_obs,
+                                               prob=args.prob_labels,
+                                               **vars(args))
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets',dist=args.sample)
     elif args.dynamics == 'mvn':
         data_generator = MVN(rollout_batch_size=args.train_batch_size,)
