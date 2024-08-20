@@ -20,7 +20,7 @@ import pandas as pd
 def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=None, exp_dir=None):
     if test_dataloader is None:
         if args.dynamics == 'NoisyPendulum':
-            data_generator = ParallelNoisyPendulum(sigma=args.sigma)
+            data_generator = ParallelNoisyPendulum(**vars(args))
             test_dataset, test_prob = data_generator.sample(batches=10, seed=201, non_zero_initial=True,
                                                             dist=args.sample)
             test_dataset = LabeledTransitionDataset(data=test_dataset, prob=test_prob, device=torch.device(args.device))
@@ -159,11 +159,19 @@ def plot_learned_kernel_sas(args, estimator, test_dataloader, data_generator):
     transition, label = next(iter(test_dataloader))
     noise = estimator.get_noise_with_model(transition).detach().cpu().numpy()
     prediction = estimator.get_prob(transition).detach().cpu().numpy()
-    fig = plt.figure(figsize=(10, 6))
+    fig = plt.figure(figsize=(10, 4))
     ax1 = fig.add_subplot(121, projection='3d')
+    ax1.set_xlabel(r'$s^\prime-f(s,a)$')
+    ax1.set_ylabel(r'$s^\prime-f(s,a)$')
+    ax1.set_zlabel(r'Learned $P(s^\prime\mid s, a)$')
     ax1.scatter(noise[:, 0], noise[:, 1], prediction)
+    ax1.view_init(elev=30, azim=45)
     ax2 = fig.add_subplot(122, projection='3d')
     ax2.scatter(noise[:, 0], noise[:, 1], label.cpu().numpy())
+    ax2.set_xlabel(r'$s^\prime-f(s,a)$')
+    ax2.set_ylabel(r'$s^\prime-f(s,a)$')
+    ax2.set_zlabel(r'True $P(s^\prime\mid s, a)$')
+    ax2.view_init(elev=30, azim=45)
     plt.show()
 
 
@@ -195,5 +203,5 @@ def evaluate_saved_features(exp_dir):
 
 
 if __name__ == '__main__':
-    evaluate_saved_single_networks('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/nce_single_network/2024-07-02-21-57-21')
-    # evaluate_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised_rf/2024-07-02-17-23-30')
+    # evaluate_saved_single_networks('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/nce_single_network/2024-07-02-21-57-21')
+    evaluate_saved_features('/home/haitong/PycharmProjects/low_rank_learning/log/NoisyPendulum/supervised/useful_results/2024-05-27-15-06-48')
