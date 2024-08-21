@@ -79,17 +79,6 @@ class DensityEstimator(object):
             return torch.div(prob, normalization)
         else:
             raise NotImplementedError
-        # elif self.kwargs.get('dynamics') == 'noisy_pendulum':
-        #     grid_1d = np.linspace(-1.2, 1.2, 120)
-        #     grids = np.meshgrid(grid_1d, grid_1d)
-        #     grid_flatten = np.vstack([np.ravel(grid) for grid in grids]).transpose()
-        #     grid_tensor = torch.from_numpy(grid_flatten).float().to(self.device)
-        #     mu_stp1_grid = 1 / (self.embedding_dim ** 0.5) * self.mu(grid_tensor)
-        #
-        #     def inner_prod
-
-
-
 
     def get_conditional_prob(self, transition):
         """
@@ -127,31 +116,94 @@ class DensityEstimator(object):
         # if 'rf' not in args.estimator:
         torch.save(self.phi.state_dict(), os.path.join(exp_dir, 'feature_phi.pth'))
         torch.save(self.mu.state_dict(), os.path.join(exp_dir, 'feature_mu.pth'))
-        # else:
-        #     torch.save(estimator.rf.state_dict(), os.path.join(exp_dir, 'rf.pth'))
-        #     torch.save(estimator.f.state_dict(), os.path.join(exp_dir, 'f.pth'))
 
-    def get_noise_with_model(self, transition):
-        st, at, s_tp1 = (transition[:, :self.state_dim],
-                         transition[:, self.state_dim:self.state_dim + self.action_dim],
-                         transition[:, self.state_dim + self.action_dim:])
-        th = st[:, 0]
-        thdot = st[:, 1]
-        max_speed = 8
-        max_torque = 2.0
-        dt = 0.05
-        g = 10.0
-        m = 1.0
-        l = 1.0
-        theta_ddot = 3 * g / (2 * l) * torch.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
-        new_th = th + dt * thdot
-        new_thdot = thdot + dt * theta_ddot
-        # new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
-        new_thdot = torch.clamp(new_thdot, -max_speed, max_speed)
-        f_sa = torch.vstack([new_th, new_thdot]).T
-        noise = s_tp1 - f_sa
-        return noise
+    # def get_noise_with_model(self, transition):
+    #     st, at, s_tp1 = (transition[:, :self.state_dim],
+    #                      transition[:, self.state_dim:self.state_dim + self.action_dim],
+    #                      transition[:, self.state_dim + self.action_dim:])
+    #     th = st[:, 0]
+    #     thdot = st[:, 1]
+    #     max_speed = 8
+    #     max_torque = 2.0
+    #     dt = 0.05
+    #     g = 10.0
+    #     m = 1.0
+    #     l = 1.0
+    #     theta_ddot = 3 * g / (2 * l) * torch.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
+    #     new_th = th + dt * thdot
+    #     new_thdot = thdot + dt * theta_ddot
+    #     # new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
+    #     new_thdot = torch.clamp(new_thdot, -max_speed, max_speed)
+    #     f_sa = torch.vstack([new_th, new_thdot]).T
+    #     noise = s_tp1 - f_sa
+    #     return noise
 
+class SpectralSVDEstimator(DensityEstimator):
+
+    def __init__(self, embedding_dim, state_dim, action_dim, shift, scale, **kwargs):
+        super().__init__(embedding_dim, state_dim, action_dim, **kwargs)
+        self.shift = torch.nn.Parameter(torch.from_numpy(shift).to(self.device))
+        self.scale = torch.nn.Parameter(torch.from_numpy(scale).to(self.device))
+        self.noise_dist = torch.distributions.normal.Normal(loc=torch.zeros([state_dim]).to(self.device),
+                                                                scale=torch.ones([state_dim]).to(self.device))
+
+    def preprocess(self, obs):
+        return (obs + self.shift) * self.scale
+
+    def get_phi(self, sa):
+        s = sa[:, :self.state_dim]
+        a = sa[:, self.state_dim:]
+        normalized_s = self.preprocess(s)
+        new_sa = torch.hstack((normalized_s, a))
+        return self.phi(new_sa)
+
+    def get_mu(self, s):
+        normalized_s = self.preprocess(s)
+        return self.mu(normalized_s)
+
+    def estimate(self, batch):
+        info = {}
+        transition = batch
+        st_at, s_tp1 = (transition [:, :self.state_dim + self.action_dim],
+                        transition [:, self.state_dim + self.action_dim:])
+
+        phi_sa = 1 / (self.embedding_dim ** 0.5) * self.get_phi(st_at)
+        mu_stp1 = 1 / (self.embedding_dim ** 0.5) * self.get_mu(s_tp1)
+        prob = torch.clamp(torch.sum(phi_sa * mu_stp1, dim=-1), min=1e-6)
+        noise = self.noise_dist.sample([len(transition)])  # only numbers of samples in the batch
+        mu_noise_stp1 = self.mu(noise)
+        noise_prob = torch.sum(phi_sa * mu_noise_stp1, dim=-1)
+        spectral_svd_loss = torch.mean(-2 * prob + noise_prob ** 2)
+
+        log_prob = torch.log(prob)
+        reg_norm_loss = self.normalize_or_regularize(log_prob)
+        loss = spectral_svd_loss + reg_norm_loss
+        info.update({'reg_norm_loss': reg_norm_loss.item()})
+
+        self.phi_optimizer.zero_grad()
+        self.mu_optimizer.zero_grad()
+        loss.backward()
+        self.phi_optimizer.step()
+        self.mu_optimizer.step()
+
+        info.update({'est_loss': spectral_svd_loss.item(),
+                     'dist_predicted': prob.detach().cpu().numpy(),
+                     })
+
+        return info
+
+    def load(self, exp_dir):
+        normalization_consts = torch.load(os.path.join(exp_dir, 'normalization.pth'))
+        self.shift = normalization_consts['shift']
+        self.scale = normalization_consts['scale']
+        self.phi.load_state_dict(torch.load(os.path.join(exp_dir, 'feature_phi.pth')))
+        self.mu.load_state_dict(torch.load(os.path.join(exp_dir, 'feature_mu.pth')))
+
+    def save(self, exp_dir):
+        # if 'rf' not in args.estimator:
+        torch.save({'shift': self.shift, 'scale': self.scale}, os.path.join(exp_dir, 'normalization.pth'))
+        torch.save(self.phi.state_dict(), os.path.join(exp_dir, 'feature_phi.pth'))
+        torch.save(self.mu.state_dict(), os.path.join(exp_dir, 'feature_mu.pth'))
 
 
 class MLEEstimator(DensityEstimator):
@@ -213,6 +265,9 @@ class L2NormEstimator(DensityEstimator):
                 return torch.inner(phi, normalization_mu)
 
             normalization = vmap(inner_prod)(phi_sa)
+
+
+
 
 
 class NCEEstimator(DensityEstimator):
