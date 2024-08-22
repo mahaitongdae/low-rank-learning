@@ -31,12 +31,12 @@ def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=N
         assert data_generator
 
     if estimator is None:
-        if args.estimator == 'mle':
+        if args.imitator == 'mle':
             estimator = MLEEstimator(embedding_dim=args.feature_dim,
                                      state_dim=data_generator.state_dim,
                                      action_dim=1,
                                      **vars(args))
-        elif args.estimator == 'nce':
+        elif args.imitator == 'nce':
             if args.noise_dist == 'uniform':
                 noise_args = {'dist': "uniform",
                               'uniform_scale': [1.0, 1.0, 8.0]}
@@ -47,23 +47,23 @@ def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=N
                                      action_dim=1,
                                      noise_args=noise_args,
                                      **vars(args))
-        elif args.estimator == 'supervised':
+        elif args.imitator == 'supervised':
             estimator = SupervisedEstimator(embedding_dim=args.feature_dim,
                                             state_dim=data_generator.state_dim,
                                             action_dim=1,
                                             **vars(args))
-        elif args.estimator == 'supervised_rf':
+        elif args.imitator == 'supervised_rf':
             estimator = SupervisedLearnableRandomFeatureEstimator(embedding_dim=args.feature_dim,
                                                                   state_dim=data_generator.state_dim,
                                                                   action_dim=data_generator.action_dim,
                                                                   **vars(args))
-        elif args.estimator == 'mle_single_network':
+        elif args.imitator == 'mle_single_network':
             estimator = MLESingleNetwork(embedding_dim=args.feature_dim,
                                          state_dim=data_generator.state_dim,
                                          action_dim=1,
                                          # noise_args=noise_args,
                                          **vars(args))
-        elif args.estimator == 'nce_single_network':
+        elif args.imitator == 'nce_single_network':
             # if args.noise_dist == 'gaussian':
             #     noise_args = {'dist': "uniform",
             #                   'uniform_scale': [1.0, 1.0]}
@@ -75,12 +75,12 @@ def evaluate_helper(args, estimator=None, test_dataloader=None, data_generator=N
                                          action_dim=1,
                                          # noise_args=noise_args,
                                          **vars(args))
-        elif args.estimator == 'supervised_single_network':
+        elif args.imitator == 'supervised_single_network':
             estimator = SupervisedSingleNetwork(embedding_dim=-1,
                                                 state_dim=data_generator.state_dim,
                                                 action_dim=1,
                                                 **vars(args))
-        elif args.estimator == 'score_matching_single_network':
+        elif args.imitator == 'score_matching_single_network':
             estimator = ScoreMatchingSingleNetwork(embedding_dim=-1,
                                                    state_dim=data_generator.state_dim,
                                                    action_dim=1,

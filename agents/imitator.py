@@ -1,0 +1,200 @@
+from agents.estimator import SpectralSVDEstimator
+import torch
+from utils import MLP, LearnableRandomFeature, NormalizedMLP
+from agents.actor import DiagGaussianActor
+import numpy as np
+
+
+def to_np(t):
+    if t is None:
+        return None
+    elif t.nelement() == 0:
+        return np.array([])
+    else:
+        return t.cpu().detach().numpy()
+
+def unpack_batch(batch):
+  return batch.state, batch.action, batch.next_state, batch.reward, batch.done
+
+class SpectralSVDImitator(SpectralSVDEstimator):
+    def __init__(self, embedding_dim, state_dim, action_dim, shift, scale, **kwargs):
+        super().__init__(embedding_dim, state_dim, action_dim, shift, scale, **kwargs)
+        hidden_dim = kwargs.get('hidden_dim', 256)
+        hidden_depth = kwargs.get('hidden_depth', 2)
+        q_lr = kwargs.get('q_lr', 1e-3)
+        d_lr = kwargs.get('d_lr', 1e-3)
+        pi_ratio_lr = kwargs.get('pi_ratio_lr', 1e-4)
+        pi_lr = kwargs.get('pi_lr', 1e-5)
+        # out_mod = torch.nn.Sigmoid() if kwargs.get('sigmoid_output', False) else torch.nn.Softplus()
+        self.q_linear_weights = torch.nn.Parameter(torch.randn((embedding_dim), device=self.device))
+        self.d_ratio_linear_weights = torch.nn.Parameter(torch.randn((embedding_dim), device=self.device))
+
+        self.pi_ratio = MLP(input_dim=state_dim + action_dim,
+                            hidden_dim=hidden_dim,
+                            hidden_depth=hidden_depth,
+                            output_dim=1,
+                            output_mod=torch.nn.Softplus()).to(device=self.device)
+        self.actor = DiagGaussianActor(state_dim, action_dim, hidden_dim, hidden_depth, [-10, 3]).to(device=self.device)
+
+        self.log_alpha = torch.tensor(np.log(0.1)).float().to(self.device)
+        self.log_alpha.requires_grad = True
+        self.target_entropy = -action_dim
+
+        self.q_optimizer = torch.optim.Adam([self.q_linear_weights], lr=q_lr)
+        self.d_ratio_optimizer = torch.optim.Adam([self.d_ratio_linear_weights], lr=d_lr)
+        self.pi_ratio_optimizer = torch.optim.Adam(self.pi_ratio.parameters(), lr=pi_ratio_lr)
+
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),
+                                                lr=pi_lr,
+                                                betas=[0.9, 0.999])
+        self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha],
+                                                    lr=pi_lr,
+                                                    betas=[0.9, 0.999])
+
+    @property
+    def alpha(self):
+        return self.log_alpha.exp()
+
+    def select_action(self, state, explore = False):
+        if isinstance(state, list):
+            state = np.array(state)
+        state = state.astype(np.float32)
+        assert len(state.shape) == 1
+        state = torch.from_numpy(state).to(self.device)
+        state = state.unsqueeze(0)
+        dist = self.actor(state)
+        action = dist.sample() if explore else dist.mean
+        action = action.clamp(torch.tensor(-1, device=self.device),
+                              torch.tensor(1, device=self.device))
+        assert action.ndim == 2 and action.shape [0] == 1
+        return to_np(action[0])
+
+    def get_q(self, state, action):
+        with torch.no_grad():
+            phi = self.get_phi(torch.hstack((state, action)))
+        q = torch.vmap(torch.inner, in_dims=(0, None))(phi, self.q_linear_weights)
+        return q
+
+    def get_d_ratio(self, state):
+        with torch.no_grad():
+            mu = self.get_mu(state)
+        d_ratio = torch.vmap(torch.inner, in_dims=(0, None))(mu, self.d_ratio_linear_weights).clamp(min=1e-8)
+        return d_ratio
+
+    def get_d_sa_ratio(self, state, action):
+        sa = torch.hstack((state, action))
+        return (self.get_d_ratio(state) * self.pi_ratio(sa).squeeze()).clamp(min=1e-8)
+
+    def get_primal_dual_loss(self, state, action, next_state, next_action, init_state, initial_action, discount):
+
+        reward = -torch.log(self.get_d_sa_ratio(state, action))
+        bellman_residual = reward + discount * self.get_q(next_state, next_action) - self.get_q(state, action)
+        primal_dual_loss = ((1 - discount) * self.get_q(init_state, initial_action).mean()
+                            + torch.mean(self.get_d_ratio(state) * bellman_residual))
+
+        return primal_dual_loss
+
+    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.05, nu_reg = 10):
+        """
+        pytorch version of ValueDICE,
+        Parameters
+        ----------
+        expert_data
+        policy_data
+        discount
+        replay_regularization
+        nu_reg
+
+        Returns
+        -------
+
+        """
+
+        expert_data = next(iter(expert_dataloader))
+
+        expert_states, expert_actions, expert_next_states = (expert_data[:, :self.state_dim],
+                                                             expert_data[:,  self.state_dim: self.state_dim + self.action_dim],
+                                                             expert_data[:,  self.state_dim + self.action_dim:])
+
+
+        rb_states, rb_actions, rb_next_states, _, _ = unpack_batch(rb_batch)
+
+        expert_next_actions_dist = self.actor(expert_next_states)
+        expert_next_actions = expert_next_actions_dist.rsample()
+
+        rb_next_actions_dist = self.actor(expert_next_states)
+        rb_next_actions = rb_next_actions_dist.rsample()
+        log_prob = rb_next_actions_dist.log_prob(rb_next_actions).sum(-1, keepdim=True)
+
+
+        expert_initial_states = expert_states.clone()
+        exp_a0_dist = self.actor(expert_initial_states)
+        exp_a0 = exp_a0_dist.rsample()
+        rb_initial_states = rb_states.clone()
+        rb_a0_dist = self.actor(rb_initial_states)
+        rb_a0 = rb_a0_dist.rsample()
+
+        def get_loss():
+
+            expert_primal_dual_loss = self.get_primal_dual_loss(expert_states,
+                                                                expert_actions,
+                                                                expert_next_states,
+                                                                expert_next_actions,
+                                                                expert_initial_states,
+                                                                exp_a0,
+                                                                discount)
+
+            rb_primal_dual_loss = self.get_primal_dual_loss(rb_states,
+                                                            rb_actions,
+                                                            rb_next_states,
+                                                            rb_next_actions,
+                                                            rb_states,
+                                                            rb_a0,
+                                                            discount
+                                                            )
+            loss = (1 - replay_regularization) * expert_primal_dual_loss + replay_regularization * rb_primal_dual_loss
+            return loss
+
+        self.d_ratio_optimizer.zero_grad()
+        self.pi_ratio_optimizer.zero_grad()
+        primal_dual_loss_d = -1 * get_loss()
+        primal_dual_loss_d.backward()
+        self.d_ratio_optimizer.step()
+        self.pi_ratio_optimizer.step()
+
+        self.q_optimizer.zero_grad()
+        primal_dual_loss_q = get_loss()
+        primal_dual_loss_q.backward()
+        self.q_optimizer.step()
+
+        self.actor_optimizer.zero_grad()
+        primal_dual_loss_pi = self.alpha.detach() * log_prob.mean() - get_loss()
+
+        primal_dual_loss_pi.backward()
+        self.actor_optimizer.step()
+
+        if True:
+            self.log_alpha_optimizer.zero_grad()
+            alpha_loss = (self.alpha *
+                          (-log_prob - self.target_entropy).detach()).mean()
+            alpha_loss.backward()
+            self.log_alpha_optimizer.step()
+
+
+        info = {'primal_dual_loss_d': primal_dual_loss_d.item(),
+                'primal_dual_loss_q': primal_dual_loss_q.item(),
+                'primal_dual_loss_pi': primal_dual_loss_pi.item(),}
+
+        info ['alpha_loss'] = alpha_loss
+        info ['alpha'] = self.alpha
+
+        return info
+
+
+
+
+
+
+
+
+
