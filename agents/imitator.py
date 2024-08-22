@@ -158,17 +158,17 @@ class SpectralSVDImitator(SpectralSVDEstimator):
         self.d_ratio_optimizer.zero_grad()
         self.pi_ratio_optimizer.zero_grad()
         primal_dual_loss_d = -1 * get_loss()
-        primal_dual_loss_d.backward()
+        primal_dual_loss_d.backward(retain_graph=True)
         self.d_ratio_optimizer.step()
         self.pi_ratio_optimizer.step()
 
         self.q_optimizer.zero_grad()
-        primal_dual_loss_q = get_loss()
+        primal_dual_loss_q = -1 * primal_dual_loss_d
         primal_dual_loss_q.backward()
         self.q_optimizer.step()
 
         self.actor_optimizer.zero_grad()
-        primal_dual_loss_pi = self.alpha.detach() * log_prob.mean() - get_loss()
+        primal_dual_loss_pi = self.alpha.detach() * log_prob.mean() - primal_dual_loss_q
 
         primal_dual_loss_pi.backward()
         self.actor_optimizer.step()

@@ -23,13 +23,13 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # Pipelines
-    parser.add_argument("--device", default='cuda', type=str)
+    parser.add_argument("--device", default='mps', type=str)
     parser.add_argument("--train_batches", default=20000, type=int)
     parser.add_argument("--train_batch_size", default=256, type=int)
 
     # Tasks
     parser.add_argument('--env_id', default='HalfCheetah-v2', type=str)
-    parser.add_argument('--expert_dataset_name', default="random-v2")
+    parser.add_argument('--expert_dataset_name', default="expert-v2")
     parser.add_argument('--expert_num_traj', default=500, type=int)
     # parser.add_argument('--logprob_regularization', action='store_true')
     # parser.set_defaults(logprob_regularization=True)
@@ -62,7 +62,7 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_depth', default=2, type=int)
     parser.add_argument('--logprob_regularization', action='store_true')
     parser.set_defaults(logprob_regularization=True)
-    parser.add_argument("--logprob_regularization_weights", default=1., type=float)
+    parser.add_argument("--logprob_regularization_weights", default=10., type=float)
     parser.add_argument("--integral_normalization", action='store_true')
     parser.set_defaults(integral_normalization=False)
     parser.add_argument("--integral_normalization_weights", default=0.1, type=float)
@@ -138,8 +138,8 @@ if __name__ == '__main__':
 
     train_dataloader = DataLoader(dataset, batch_size=args.train_batch_size, shuffle=True)
 
-    env = gymnasium.make(args.env_id)
-    eval_env = gymnasium.make(args.env_id)
+    env = gymnasium.make('HalfCheetah-v4')
+    eval_env = gymnasium.make('HalfCheetah-v4')
 
     # Evaluate untrained policy
     evaluations = []

@@ -170,8 +170,9 @@ class SpectralSVDEstimator(DensityEstimator):
         phi_sa = 1 / (self.embedding_dim ** 0.5) * self.get_phi(st_at)
         mu_stp1 = 1 / (self.embedding_dim ** 0.5) * self.get_mu(s_tp1)
         prob = torch.clamp(torch.sum(phi_sa * mu_stp1, dim=-1), min=1e-6)
-        noise = self.noise_dist.sample([len(transition)])  # only numbers of samples in the batch
-        mu_noise_stp1 = self.mu(noise)
+        # noise = self.noise_dist.sample([len(transition)])  # only numbers of samples in the batch
+        noise = st_at[:, :self.state_dim]
+        mu_noise_stp1 = self.get_mu(noise)
         noise_prob = torch.sum(phi_sa * mu_noise_stp1, dim=-1)
         spectral_svd_loss = torch.mean(-2 * prob + noise_prob ** 2)
 
