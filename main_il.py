@@ -1,12 +1,12 @@
 from envs.noisy_pendulum import ParallelNoisyPendulum
 from envs.mvn import MVN, MVNUniform
 from utils import TransitionDataset, LabeledTransitionDataset, TransitionDatasetfromD4RL
-from data_utils import load_d4rl_data
+from data_utils import load_d4rl_data, add_absorbing_states
 import torch
 from torch.utils.data import DataLoader
 from agents.estimator import MLEEstimator, NCEEstimator, SupervisedEstimator, SupervisedLearnableRandomFeatureEstimator, SpectralSVDEstimator
 from agents.single_network_estimator import NCESingleNetwork
-from agents.imitator import SpectralSVDImitator
+from agents.imitator import SpectralSVDImitator, ValuDICEImitator
 from tensorboardX import SummaryWriter
 import argparse
 import os
@@ -23,14 +23,14 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # Pipelines
-    parser.add_argument("--device", default='mps', type=str)
+    parser.add_argument("--device", default='cuda', type=str)
     parser.add_argument("--train_batches", default=20000, type=int)
     parser.add_argument("--train_batch_size", default=256, type=int)
 
     # Tasks
     parser.add_argument('--env_id', default='HalfCheetah-v2', type=str)
     parser.add_argument('--expert_dataset_name', default="expert-v2")
-    parser.add_argument('--expert_num_traj', default=500, type=int)
+    parser.add_argument('--expert_num_traj', default=20, type=int)
     # parser.add_argument('--logprob_regularization', action='store_true')
     # parser.set_defaults(logprob_regularization=True)
     # parser.add_argument("--logprob_regularization_weights", default=1., type=float)
@@ -54,7 +54,7 @@ if __name__ == '__main__':
     parser.add_argument("--preprocess", default='none', type=str)
 
     ## Estimators general
-    parser.add_argument('--estimator', default='spectral_svd', type=str)
+    parser.add_argument('--estimator', default='value_dice', type=str)
     parser.add_argument('--lr', default=1e-4, type=float)
 
     parser.add_argument('--feature_dim', default=1024, type=int)
@@ -68,9 +68,9 @@ if __name__ == '__main__':
     parser.add_argument("--integral_normalization_weights", default=0.1, type=float)
 
     ## imitation learning
-    parser.add_argument("--start_timesteps", default=5000, type=float,
+    parser.add_argument("--start_timesteps", default=1000, type=float,
                         help='the number of initial steps that collects data via random sampled actions.')  # Time steps initial random policy is used
-    parser.add_argument("--eval_freq", default=5e4, type=int,
+    parser.add_argument("--eval_freq", default=10, type=int,
                         help='number of iterations as the interval to evaluate trained policy.')  # How often (time steps) we evaluate
     parser.add_argument("--max_timesteps", default=1e5, type=float,
                         help='the total training time steps / iterations.')  # Max time steps to run environment
@@ -93,6 +93,15 @@ if __name__ == '__main__':
         dataset_dir, args.env_id,
         args.expert_dataset_name,
         args.expert_num_traj, start_idx=0)
+
+    env = gymnasium.make('HalfCheetah-v4')
+    eval_env = gymnasium.make('HalfCheetah-v4')
+
+    (expert_states, expert_actions, expert_next_states,
+     expert_dones) = add_absorbing_states(expert_states,
+                                                     expert_actions,
+                                                     expert_next_states,
+                                                     expert_dones, env)
     shift = - np.mean(expert_states, 0)
     scale = 1.0 / (np.std(expert_states, 0) + 1e-6)
 
@@ -107,25 +116,33 @@ if __name__ == '__main__':
     train_dataloader = DataLoader(dataset, batch_size=args.train_batch_size, shuffle=True)
     # len(train_dataloader)
     epoch = 10
-    assert args.estimator == 'spectral_svd'
-    imitator = SpectralSVDImitator(embedding_dim=args.feature_dim,
-                                   state_dim=expert_initial_states.shape[-1],
-                                   action_dim=expert_actions.shape[-1],
-                                   shift=shift,
-                                   scale=scale,
-                                   **vars(args))
+    if args.estimator == 'spectral_svd':
+        imitator = SpectralSVDImitator(embedding_dim=args.feature_dim,
+                                       state_dim=expert_initial_states.shape[-1] + 1,
+                                       action_dim=expert_actions.shape[-1],
+                                       shift=shift,
+                                       scale=scale,
+                                       **vars(args))
+    elif args.estimator == 'value_dice':
+        imitator = ValuDICEImitator(state_dim=expert_initial_states.shape[-1] + 1,
+                                       action_dim=expert_actions.shape[-1],
+                                    **vars(args))
+    else:
+        raise NotImplementedError
 
-    for batch, transition in enumerate(train_dataloader):
-        info = imitator.estimate(transition)
-        for key, value in info.items():
-            if 'dist' in key:
-                summary_writer.add_histogram(key, value, batch+1)
-            else:
-                summary_writer.add_scalar(key, value, batch + 1)
-        summary_writer.flush()
-        print(f"Epoch {batch + 1}, loss {info.get('est_loss')}")
+    if args.estimator == "spectral_svd":
+        for batch, transition in enumerate(train_dataloader):
 
-    imitator.save(exp_dir)
+            info = imitator.estimate(transition)
+            for key, value in info.items():
+                if 'dist' in key:
+                    summary_writer.add_histogram(key, value, batch+1)
+                else:
+                    summary_writer.add_scalar(key, value, batch + 1)
+            summary_writer.flush()
+            print(f"Epoch {batch + 1}, loss {info.get('est_loss')}")
+
+        imitator.save(exp_dir)
 
     # save dicts
     args_dict = vars(args)
@@ -138,8 +155,7 @@ if __name__ == '__main__':
 
     train_dataloader = DataLoader(dataset, batch_size=args.train_batch_size, shuffle=True)
 
-    env = gymnasium.make('HalfCheetah-v4')
-    eval_env = gymnasium.make('HalfCheetah-v4')
+
 
     # Evaluate untrained policy
     evaluations = []
@@ -183,7 +199,8 @@ if __name__ == '__main__':
 
         if t >= args.start_timesteps:
             rb_batch = replay_buffer.sample(args.train_batch_size)
-            info = imitator.imitate(train_dataloader, rb_batch, 0.99)
+            for _ in range(5):
+                info = imitator.imitate(train_dataloader, rb_batch, 0.99)
 
         if done:
             # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
@@ -199,9 +216,9 @@ if __name__ == '__main__':
             episode_num += 1
 
         # Evaluate episode
-        if (t + 1) % args.eval_freq == 0:
+        if (t + 1) % args.eval_freq == 0 and t > args.start_timesteps:
             steps_per_sec = timer.steps_per_sec(t + 1)
-            eval_len, eval_ret, _, _ = eval_policy(imitator, eval_env, eval_episodes=50)
+            eval_len, eval_ret, _, _ = eval_policy(imitator, eval_env, eval_episodes=1)
             evaluations.append(eval_ret)
 
             if t >= args.start_timesteps:
