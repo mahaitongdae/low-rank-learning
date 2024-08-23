@@ -54,7 +54,7 @@ class ValuDICEImitator(torch.nn.Module):
         assert action.ndim == 2 and action.shape [0] == 1
         return to_np(action[0])
 
-    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.05, nu_reg = 10):
+    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.1, nu_reg = 0.1):
         """
         pytorch version of ValueDICE,
         Parameters
@@ -83,7 +83,7 @@ class ValuDICEImitator(torch.nn.Module):
         expert_next_actions = expert_next_actions_dist.rsample()
 
         rb_next_actions_dist = self.actor(expert_next_states)
-        rb_next_actions = rb_next_actions_dist.rsample()
+        rb_next_actions = rb_next_actions_dist.rsample().clamp(min=-1, max=1)
         log_prob = rb_next_actions_dist.log_prob(rb_next_actions).sum(-1, keepdim=True)
 
         expert_initial_states = expert_states.clone()
@@ -134,7 +134,7 @@ class ValuDICEImitator(torch.nn.Module):
         nu_next_inter = alpha * expert_next_inputs + (1 - alpha) * rb_next_inputs
         nu_inter = torch.vstack((nu_inter, nu_next_inter))
 
-        nu_grad = torch.autograd.grad(self.nu(nu_inter).sum(), nu_inter)[0]
+        nu_grad = torch.autograd.grad(self.nu(nu_inter).mean(), nu_inter)[0]
         nu_grad_penalty = torch.mean(
             torch.square(torch.norm(nu_grad, dim=-1, keepdim=True) - 1))
 
@@ -150,7 +150,8 @@ class ValuDICEImitator(torch.nn.Module):
         self.actor_optimizer.step()
 
         return {'loss': loss.item(), 'nu_expert': expert_nu.mean().item(), 'nu_rb': rb_nu.mean().item(),
-                'nu_reg': nu_grad_penalty.item(), 'actor_loss': pi_loss.item(),}
+                'nu_grad_penalty': nu_grad_penalty.item(), 'actor_loss': pi_loss.item(),
+                'policy_entropy': -1 * log_prob.mean().item()}
 
 
 class SpectralSVDImitator(SpectralSVDEstimator):

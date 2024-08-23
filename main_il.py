@@ -1,7 +1,7 @@
 from envs.noisy_pendulum import ParallelNoisyPendulum
 from envs.mvn import MVN, MVNUniform
 from utils import TransitionDataset, LabeledTransitionDataset, TransitionDatasetfromD4RL
-from data_utils import load_d4rl_data, add_absorbing_states
+from data_utils import load_d4rl_data, add_absorbing_states, load_expert_data, subsample_trajectories
 import torch
 from torch.utils.data import DataLoader
 from agents.estimator import MLEEstimator, NCEEstimator, SupervisedEstimator, SupervisedLearnableRandomFeatureEstimator, SpectralSVDEstimator
@@ -18,12 +18,13 @@ from buffer import ReplayBuffer
 import gymnasium
 from utils import Timer
 from utilities.eval import eval_policy
+from envs.wrappers import create_il_env
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # Pipelines
-    parser.add_argument("--device", default='cuda', type=str)
+    parser.add_argument("--device", default='mps', type=str)
     parser.add_argument("--train_batches", default=20000, type=int)
     parser.add_argument("--train_batch_size", default=256, type=int)
 
@@ -70,7 +71,7 @@ if __name__ == '__main__':
     ## imitation learning
     parser.add_argument("--start_timesteps", default=1000, type=float,
                         help='the number of initial steps that collects data via random sampled actions.')  # Time steps initial random policy is used
-    parser.add_argument("--eval_freq", default=10, type=int,
+    parser.add_argument("--eval_freq", default=100, type=int,
                         help='number of iterations as the interval to evaluate trained policy.')  # How often (time steps) we evaluate
     parser.add_argument("--max_timesteps", default=1e5, type=float,
                         help='the total training time steps / iterations.')  # Max time steps to run environment
@@ -89,21 +90,33 @@ if __name__ == '__main__':
     ### set env and collect data
 
     assert args.env_id == 'HalfCheetah-v2' # we currently only use this one
-    (expert_initial_states, expert_states, expert_actions, expert_next_states, expert_dones) = load_d4rl_data(
-        dataset_dir, args.env_id,
-        args.expert_dataset_name,
-        args.expert_num_traj, start_idx=0)
+    # (expert_initial_states, expert_states, expert_actions, expert_next_states, expert_dones) = load_d4rl_data(
+    #     dataset_dir, args.env_id,
+    #     args.expert_dataset_name,
+    #     args.expert_num_traj, start_idx=0)
+    (expert_states, expert_actions, expert_next_states,
+     expert_dones) = load_expert_data('datasets/HalfCheetah-v2.npz')
 
-    env = gymnasium.make('HalfCheetah-v4')
-    eval_env = gymnasium.make('HalfCheetah-v4')
+    (expert_states, expert_actions, expert_next_states,
+     expert_dones) = subsample_trajectories(expert_states,
+                                                       expert_actions,
+                                                       expert_next_states,
+                                                       expert_dones,
+                                                       args.expert_num_traj)
+
+    shift = -np.mean(expert_states, 0)
+    scale = 1.0 / (np.std(expert_states, 0) + 1e-3)
+    expert_states = (expert_states + shift) * scale
+    expert_next_states = (expert_next_states + shift) * scale
+
+    env = create_il_env(args.env_id, 42, shift, scale)
+    eval_env = create_il_env(args.env_id, 42, shift, scale)
 
     (expert_states, expert_actions, expert_next_states,
      expert_dones) = add_absorbing_states(expert_states,
                                                      expert_actions,
                                                      expert_next_states,
                                                      expert_dones, env)
-    shift = - np.mean(expert_states, 0)
-    scale = 1.0 / (np.std(expert_states, 0) + 1e-6)
 
 
     dataset = TransitionDatasetfromD4RL(expert_states=expert_states,
@@ -118,13 +131,13 @@ if __name__ == '__main__':
     epoch = 10
     if args.estimator == 'spectral_svd':
         imitator = SpectralSVDImitator(embedding_dim=args.feature_dim,
-                                       state_dim=expert_initial_states.shape[-1] + 1,
+                                       state_dim=expert_states.shape[-1],
                                        action_dim=expert_actions.shape[-1],
                                        shift=shift,
                                        scale=scale,
                                        **vars(args))
     elif args.estimator == 'value_dice':
-        imitator = ValuDICEImitator(state_dim=expert_initial_states.shape[-1] + 1,
+        imitator = ValuDICEImitator(state_dim=expert_states.shape[-1],
                                        action_dim=expert_actions.shape[-1],
                                     **vars(args))
     else:
