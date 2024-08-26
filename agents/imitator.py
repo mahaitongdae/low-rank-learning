@@ -20,6 +20,17 @@ def weighted_softmax(x, weights, dim=0):
     x = x - torch.max(x)
     return weights * torch.exp(x) / torch.sum(weights * torch.exp(x), dim=dim, keepdim=True)
 
+def orthogonal_regularization(model, device, reg=1e-4):
+    with torch.enable_grad():
+        orth_loss = torch.zeros(1).to(device)
+        for name, param in model.named_parameters():
+            if 'bias' not in name:
+                param_flat = param.view(param.shape[0], -1)
+                sym = torch.mm(param_flat, torch.t(param_flat))
+                sym -= torch.eye(param_flat.shape[0]).to(device)
+                orth_loss = orth_loss + (reg * sym.abs().sum())
+    return orth_loss
+
 class ValuDICEImitator(torch.nn.Module):
 
     def __init__(self, state_dim, action_dim, **kwargs):
@@ -38,7 +49,17 @@ class ValuDICEImitator(torch.nn.Module):
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-5)
         self.state_dim = state_dim
         self.action_dim = action_dim
+        alpha = 0.1
+        self.log_alpha = torch.tensor(np.log(alpha)).float().to(self.device)
+        self.log_alpha.requires_grad = True
+        self.target_entropy = -action_dim
+        self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha],
+                                                   lr=3e-4,
+                                                   betas=[0.9, 0.999])
 
+    @property
+    def alpha(self):
+        return self.log_alpha.exp()
 
     def select_action(self, state, explore = False):
         if isinstance(state, list):
@@ -54,7 +75,7 @@ class ValuDICEImitator(torch.nn.Module):
         assert action.ndim == 2 and action.shape [0] == 1
         return to_np(action[0])
 
-    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.1, nu_reg = 0.1):
+    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.05, nu_reg = 10.0):
         """
         pytorch version of ValueDICE,
         Parameters
@@ -83,7 +104,7 @@ class ValuDICEImitator(torch.nn.Module):
         expert_next_actions = expert_next_actions_dist.rsample()
 
         rb_next_actions_dist = self.actor(expert_next_states)
-        rb_next_actions = rb_next_actions_dist.rsample().clamp(min=-1, max=1)
+        rb_next_actions = rb_next_actions_dist.rsample().clamp(min=-1 + 1e-6, max=1 - 1e-6)
         log_prob = rb_next_actions_dist.log_prob(rb_next_actions).sum(-1, keepdim=True)
 
         expert_initial_states = expert_states.clone()
@@ -120,8 +141,8 @@ class ValuDICEImitator(torch.nn.Module):
         ])
         rb_expert_weights = rb_expert_weights / rb_expert_weights.sum()
 
-        with torch.no_grad():
-            w_softmax = weighted_softmax(rb_expert_diff, rb_expert_weights, dim=0)
+        # with torch.no_grad():
+        w_softmax = weighted_softmax(rb_expert_diff, rb_expert_weights, dim=0)
 
         nonlinear_loss = (w_softmax * rb_expert_diff).sum()
 
@@ -134,12 +155,19 @@ class ValuDICEImitator(torch.nn.Module):
         nu_next_inter = alpha * expert_next_inputs + (1 - alpha) * rb_next_inputs
         nu_inter = torch.vstack((nu_inter, nu_next_inter))
 
-        nu_grad = torch.autograd.grad(self.nu(nu_inter).mean(), nu_inter)[0]
+        nu_grad = torch.autograd.grad(self.nu(nu_inter).sum(), nu_inter)[0]
         nu_grad_penalty = torch.mean(
             torch.square(torch.norm(nu_grad, dim=-1, keepdim=True) - 1))
 
         nu_loss = loss + nu_grad_penalty * nu_reg
-        pi_loss = -1 * loss
+        pi_loss = -1 * loss + self.alpha.detach() * log_prob.mean() # + orthogonal_regularization(self.actor.trunk, self.device)
+
+        self.log_alpha_optimizer.zero_grad()
+        alpha_loss = (self.alpha *
+                      (-log_prob - self.target_entropy).detach()).mean()
+        alpha_loss.backward()
+        self.log_alpha_optimizer.step()
+
 
         self.nu_optimizer.zero_grad()
         nu_loss.backward(retain_graph=True, inputs=list(self.nu.parameters()))
@@ -151,7 +179,7 @@ class ValuDICEImitator(torch.nn.Module):
 
         return {'loss': loss.item(), 'nu_expert': expert_nu.mean().item(), 'nu_rb': rb_nu.mean().item(),
                 'nu_grad_penalty': nu_grad_penalty.item(), 'actor_loss': pi_loss.item(),
-                'policy_entropy': -1 * log_prob.mean().item()}
+                'policy_entropy': -1 * log_prob.mean().item(),'alpha_loss': alpha_loss, 'alpha': self.alpha}
 
 
 class SpectralSVDImitator(SpectralSVDEstimator):

@@ -24,7 +24,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # Pipelines
-    parser.add_argument("--device", default='mps', type=str)
+    parser.add_argument("--device", default='cuda', type=str)
     parser.add_argument("--train_batches", default=20000, type=int)
     parser.add_argument("--train_batch_size", default=256, type=int)
 
@@ -174,7 +174,7 @@ if __name__ == '__main__':
     evaluations = []
     replay_buffer = ReplayBuffer(env.observation_space.shape[0], env.action_space.shape[0], device=args.device)
 
-    state, _ = env.reset()
+    state, _ = env.reset(seed=42)
     done = False
     episode_reward = 0
     episode_timesteps = 0
@@ -195,10 +195,12 @@ if __name__ == '__main__':
         episode_timesteps += 1
 
         # Select action randomly or according to policy
-        if t < args.start_timesteps:
+        if t < 2000:
             action = env.action_space.sample()
         else:
             action = imitator.select_action(state, explore=True)
+
+        print(action)
 
         # Perform action
         next_state, reward, terminated, truncated, rollout_info = env.step(action)
@@ -231,7 +233,7 @@ if __name__ == '__main__':
         # Evaluate episode
         if (t + 1) % args.eval_freq == 0 and t > args.start_timesteps:
             steps_per_sec = timer.steps_per_sec(t + 1)
-            eval_len, eval_ret, _, _ = eval_policy(imitator, eval_env, eval_episodes=1)
+            eval_len, eval_ret, _, _ = eval_policy(imitator, eval_env, eval_episodes=1, seed=42)
             evaluations.append(eval_ret)
 
             if t >= args.start_timesteps:
