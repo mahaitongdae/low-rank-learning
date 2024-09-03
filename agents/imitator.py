@@ -75,7 +75,7 @@ class ValuDICEImitator(torch.nn.Module):
         assert action.ndim == 2 and action.shape [0] == 1
         return to_np(action[0])
 
-    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.05, nu_reg = 10.0):
+    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.0, nu_reg = 10.0):
         """
         pytorch version of ValueDICE,
         Parameters
@@ -141,8 +141,8 @@ class ValuDICEImitator(torch.nn.Module):
         ])
         rb_expert_weights = rb_expert_weights / rb_expert_weights.sum()
 
-        # with torch.no_grad():
-        w_softmax = weighted_softmax(rb_expert_diff, rb_expert_weights, dim=0)
+        with torch.no_grad():
+            w_softmax = weighted_softmax(rb_expert_diff, rb_expert_weights, dim=0)
 
         nonlinear_loss = (w_softmax * rb_expert_diff).sum()
 
@@ -150,23 +150,29 @@ class ValuDICEImitator(torch.nn.Module):
 
         loss = nonlinear_loss - linear_loss
 
+        '''
+        Gradient penalty from
+        Gulrajani, I., Ahmed, F., Arjovsky, M., Dumoulin, V. and Courville, A.C., 2017. Improved training of wasserstein gans. Advances in neural information processing systems, 30.
+        In pytorch implementation, we need to specify create_graph=True to create the graph of derivatives.
+        '''
+
         alpha = torch.rand((len(expert_inputs_sa), 1), device=self.device)
         nu_inter = alpha * expert_inputs_sa + (1 - alpha) * rb_inputs_sa
         nu_next_inter = alpha * expert_next_inputs + (1 - alpha) * rb_next_inputs
         nu_inter = torch.vstack((nu_inter, nu_next_inter))
 
-        nu_grad = torch.autograd.grad(self.nu(nu_inter).sum(), nu_inter)[0]
+        nu_grad = torch.autograd.grad(self.nu(nu_inter).sum(), nu_inter,create_graph=True)[0]
         nu_grad_penalty = torch.mean(
             torch.square(torch.norm(nu_grad, dim=-1, keepdim=True) - 1))
 
         nu_loss = loss + nu_grad_penalty * nu_reg
-        pi_loss = -1 * loss + self.alpha.detach() * log_prob.mean() # + orthogonal_regularization(self.actor.trunk, self.device)
+        pi_loss = -1 * loss + orthogonal_regularization(self.actor.trunk, self.device) # + self.alpha.detach() * log_prob.mean() #
 
-        self.log_alpha_optimizer.zero_grad()
-        alpha_loss = (self.alpha *
-                      (-log_prob - self.target_entropy).detach()).mean()
-        alpha_loss.backward()
-        self.log_alpha_optimizer.step()
+        # self.log_alpha_optimizer.zero_grad()
+        # alpha_loss = (self.alpha *
+        #               (-log_prob - self.target_entropy).detach()).mean()
+        # alpha_loss.backward()
+        # self.log_alpha_optimizer.step()
 
 
         self.nu_optimizer.zero_grad()
@@ -178,8 +184,12 @@ class ValuDICEImitator(torch.nn.Module):
         self.actor_optimizer.step()
 
         return {'loss': loss.item(), 'nu_expert': expert_nu.mean().item(), 'nu_rb': rb_nu.mean().item(),
-                'nu_grad_penalty': nu_grad_penalty.item(), 'actor_loss': pi_loss.item(),
-                'policy_entropy': -1 * log_prob.mean().item(),'alpha_loss': alpha_loss, 'alpha': self.alpha}
+                'nu_grad_penalty': nu_grad_penalty.item(),
+                'actor_loss': pi_loss.item(),
+                'policy_entropy': -1 * log_prob.mean().item(),
+                # 'alpha_loss': alpha_loss,
+                # 'alpha': self.alpha
+                }
 
 
 class SpectralSVDImitator(SpectralSVDEstimator):

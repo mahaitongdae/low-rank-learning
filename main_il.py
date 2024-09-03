@@ -200,7 +200,7 @@ if __name__ == '__main__':
         else:
             action = imitator.select_action(state, explore=True)
 
-        print(action)
+        # print(action)
 
         # Perform action
         next_state, reward, terminated, truncated, rollout_info = env.step(action)
