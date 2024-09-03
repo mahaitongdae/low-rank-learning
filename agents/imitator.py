@@ -27,9 +27,10 @@ def orthogonal_regularization(model, device, reg=1e-4):
             if 'bias' not in name:
                 param_flat = param.view(param.shape[0], -1)
                 sym = torch.mm(param_flat, torch.t(param_flat))
-                sym -= torch.eye(param_flat.shape[0]).to(device)
-                orth_loss = orth_loss + (reg * sym.abs().sum())
-    return orth_loss
+                # sym -= torch.eye(param_flat.shape[0]).to(device)
+                # orth_loss = orth_loss + (reg * sym.abs().sum())
+                orth_loss += torch.sum(torch.square(sym * (1 - torch.eye(sym.shape[0]).to(device))))
+    return reg * orth_loss
 
 class ValuDICEImitator(torch.nn.Module):
 
@@ -38,12 +39,16 @@ class ValuDICEImitator(torch.nn.Module):
         hidden_dim = kwargs.get('hidden_dim', 256)
         hidden_depth = kwargs.get('hidden_depth', 2)
         self.device = torch.device(kwargs.get('device'))
-        self.nu = MLP(input_dim=state_dim + action_dim, hidden_dim=hidden_dim, hidden_depth=hidden_depth, output_dim=1).to(self.device)
+        self.nu = MLP(input_dim=state_dim + action_dim,
+                      hidden_dim=hidden_dim,
+                      hidden_depth=hidden_depth,
+                      output_dim=1,
+                      output_bias=False).to(self.device)
         self.actor = DiagGaussianActor(obs_dim=state_dim,
                                        action_dim=action_dim,
                                        hidden_dim=hidden_dim,
                                        hidden_depth=hidden_depth,
-                                       log_std_bounds=[-20, 3]).to(self.device)
+                                       log_std_bounds=[-5, 2]).to(self.device)
 
         self.nu_optimizer = torch.optim.Adam(self.nu.parameters(), lr=1e-3)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-5)
@@ -75,7 +80,7 @@ class ValuDICEImitator(torch.nn.Module):
         assert action.ndim == 2 and action.shape [0] == 1
         return to_np(action[0])
 
-    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.0, nu_reg = 10.0):
+    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.05, nu_reg = 10.0):
         """
         pytorch version of ValueDICE,
         Parameters

@@ -64,14 +64,14 @@ if __name__ == '__main__':
     parser.add_argument('--logprob_regularization', action='store_true')
     parser.set_defaults(logprob_regularization=True)
     parser.add_argument("--logprob_regularization_weights", default=10., type=float)
-    parser.add_argument("--integral_normalization", action='store_true')
-    parser.set_defaults(integral_normalization=False)
-    parser.add_argument("--integral_normalization_weights", default=0.1, type=float)
+    # parser.add_argument("--integral_normalization", action='store_true')
+    # parser.set_defaults(integral_normalization=False)
+    # parser.add_argument("--integral_normalization_weights", default=0.1, type=float)
 
     ## imitation learning
     parser.add_argument("--start_timesteps", default=1000, type=float,
                         help='the number of initial steps that collects data via random sampled actions.')  # Time steps initial random policy is used
-    parser.add_argument("--eval_freq", default=100, type=int,
+    parser.add_argument("--eval_freq", default=1000, type=int,
                         help='number of iterations as the interval to evaluate trained policy.')  # How often (time steps) we evaluate
     parser.add_argument("--max_timesteps", default=1e5, type=float,
                         help='the total training time steps / iterations.')  # Max time steps to run environment
@@ -218,6 +218,15 @@ if __name__ == '__main__':
                 info = imitator.imitate(train_dataloader, rb_batch, 0.99)
 
         if done:
+            if terminated:
+                next_obs = env.get_absorbing_state()
+                replay_buffer.add(state, action, next_obs, reward, True)
+                for abs_i in range(10):
+                    if abs_i + episode_timesteps < env._max_episode_steps:  # pylint: disable=protected-access
+                        obs = env.get_absorbing_state()
+                        action = env.action_space.sample()
+                        next_obs = env.get_absorbing_state()
+                        replay_buffer.add(obs, action, next_obs, reward, True) # we will not use reward and done in the rb
             # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
             print(
                 f"Total T: {t + 1} Episode Num: {episode_num + 1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f} Info: {rollout_info}")
@@ -233,7 +242,7 @@ if __name__ == '__main__':
         # Evaluate episode
         if (t + 1) % args.eval_freq == 0 and t > args.start_timesteps:
             steps_per_sec = timer.steps_per_sec(t + 1)
-            eval_len, eval_ret, _, _ = eval_policy(imitator, eval_env, eval_episodes=1, seed=42)
+            eval_len, eval_ret, _, _ = eval_policy(imitator, eval_env, eval_episodes=10, seed=42)
             evaluations.append(eval_ret)
 
             if t >= args.start_timesteps:
@@ -253,7 +262,7 @@ if __name__ == '__main__':
         if (t + 1) % 20 == 0:
             for key, value in info.items():
                 if 'dist' not in key:
-                    summary_writer.add_scalar(f'info/{key}', value, t + 1)
+                    summary_writer.add_scalar(f'info/{key}', value, t * 5 + 1)
                 else:
                     for dist_key, dist_val in value.items():
                         summary_writer.add_histogram(dist_key, dist_val, t + 1)
