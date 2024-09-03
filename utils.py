@@ -65,6 +65,19 @@ class TransitionDatasetfromD4RL(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
+class NoiseDataset4Repr(Dataset):
+    def __init__(self, noise_states, device=None):
+        # transitions = np.concatenate([expert_states, expert_actions, expert_next_states], axis=1)
+        self.data = torch.from_numpy(noise_states).float()
+        if device:
+            self.data=self.data.to(device)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
 class LabeledTransitionDataset(Dataset):
 
     def __init__(self, file_path=None, data=None, prob=None, device=None):

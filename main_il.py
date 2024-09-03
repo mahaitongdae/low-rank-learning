@@ -1,12 +1,8 @@
-from envs.noisy_pendulum import ParallelNoisyPendulum
-from envs.mvn import MVN, MVNUniform
-from utils import TransitionDataset, LabeledTransitionDataset, TransitionDatasetfromD4RL
+from utils import TransitionDataset, LabeledTransitionDataset, TransitionDatasetfromD4RL, NoiseDataset4Repr
 from data_utils import load_d4rl_data, add_absorbing_states, load_expert_data, subsample_trajectories
 import torch
 from torch.utils.data import DataLoader
-from agents.estimator import MLEEstimator, NCEEstimator, SupervisedEstimator, SupervisedLearnableRandomFeatureEstimator, SpectralSVDEstimator
-from agents.single_network_estimator import NCESingleNetwork
-from agents.imitator import SpectralSVDImitator, ValuDICEImitator
+from agents.imitator import ReprValueDICEImitator, ValuDICEImitator
 from tensorboardX import SummaryWriter
 import argparse
 import os
@@ -32,6 +28,7 @@ if __name__ == '__main__':
     parser.add_argument('--env_id', default='HalfCheetah-v2', type=str)
     parser.add_argument('--expert_dataset_name', default="expert-v2")
     parser.add_argument('--expert_num_traj', default=20, type=int)
+    parser.add_argument('--seed', default=42, type=int)
     # parser.add_argument('--logprob_regularization', action='store_true')
     # parser.set_defaults(logprob_regularization=True)
     # parser.add_argument("--logprob_regularization_weights", default=1., type=float)
@@ -55,8 +52,11 @@ if __name__ == '__main__':
     parser.add_argument("--preprocess", default='none', type=str)
 
     ## Estimators general
-    parser.add_argument('--estimator', default='value_dice', type=str)
-    parser.add_argument('--lr', default=1e-4, type=float)
+    parser.add_argument('--imitator', default='repr_value_dice', type=str)
+    parser.add_argument('--repr_lr', default=3e-4, type=float)
+    parser.add_argument('--nu_lr', default=1e-3, type=float)
+    parser.add_argument('--policy_lr', default=1e-5, type=float)
+    
 
     parser.add_argument('--feature_dim', default=1024, type=int)
     parser.add_argument('--hidden_dim', default=256, type=int)
@@ -73,6 +73,10 @@ if __name__ == '__main__':
                         help='the number of initial steps that collects data via random sampled actions.')  # Time steps initial random policy is used
     parser.add_argument("--eval_freq", default=1000, type=int,
                         help='number of iterations as the interval to evaluate trained policy.')  # How often (time steps) we evaluate
+    parser.add_argument("--repr_iters", default=500, type=int,
+                        help="the total iteration of representation learning.")
+    parser.add_argument("--random_action_steps", default=2e3, type=int,
+                        help="First how many iterations do random sampling.")
     parser.add_argument("--max_timesteps", default=1e5, type=float,
                         help='the total training time steps / iterations.')  # Max time steps to run environment
 
@@ -81,7 +85,7 @@ if __name__ == '__main__':
     ### set file path
     root_dir = os.path.dirname(os.path.abspath(__file__))
     log_dir =os.path.join(root_dir, 'log')
-    alg_dir = os.path.join(log_dir, f'{args.env_id}/{args.estimator}')
+    alg_dir = os.path.join(log_dir, f'{args.env_id}/{args.imitator}')
     exp_dir = os.path.join(alg_dir, f'{datetime.now().strftime("%Y-%m-%d-%H-%M-%S")}')
     os.makedirs(exp_dir, exist_ok=True)
     summary_writer = SummaryWriter(exp_dir)
@@ -123,37 +127,40 @@ if __name__ == '__main__':
                                         expert_actions=expert_actions,
                                         expert_next_states=expert_next_states,
                                         device=torch.device(args.device))
+    noise_dataset = NoiseDataset4Repr(noise_states=expert_states, device=torch.device(args.device))
 
     ### initial training
 
     train_dataloader = DataLoader(dataset, batch_size=args.train_batch_size, shuffle=True)
+    noise_dataloader = DataLoader(noise_dataset, batch_size=args.train_batch_size, shuffle=True)
     # len(train_dataloader)
     epoch = 10
-    if args.estimator == 'spectral_svd':
-        imitator = SpectralSVDImitator(embedding_dim=args.feature_dim,
-                                       state_dim=expert_states.shape[-1],
-                                       action_dim=expert_actions.shape[-1],
-                                       shift=shift,
-                                       scale=scale,
-                                       **vars(args))
-    elif args.estimator == 'value_dice':
+    if args.imitator == 'repr_value_dice':
+        imitator = ReprValueDICEImitator(embedding_dim=args.feature_dim,
+                                         state_dim=expert_states.shape[-1],
+                                         action_dim=expert_actions.shape[-1],
+                                         shift=shift,
+                                         scale=scale,
+                                         **vars(args))
+    elif args.imitator == 'value_dice':
         imitator = ValuDICEImitator(state_dim=expert_states.shape[-1],
                                        action_dim=expert_actions.shape[-1],
                                     **vars(args))
     else:
         raise NotImplementedError
 
-    if args.estimator == "spectral_svd":
-        for batch, transition in enumerate(train_dataloader):
-
-            info = imitator.estimate(transition)
+    if args.imitator == "repr_value_dice":
+        for batch in range(int(args.repr_iters)):
+            
+            info = imitator.learn_repr(train_dataloader, noise_dataloader)
             for key, value in info.items():
                 if 'dist' in key:
                     summary_writer.add_histogram(key, value, batch+1)
                 else:
                     summary_writer.add_scalar(key, value, batch + 1)
             summary_writer.flush()
-            print(f"Epoch {batch + 1}, loss {info.get('est_loss')}")
+            if batch % 100 == 0:
+                print(f"Epoch {batch + 1}, loss {info.get('est_loss')}")
 
         imitator.save(exp_dir)
 
@@ -163,18 +170,14 @@ if __name__ == '__main__':
     with open(os.path.join(exp_dir, 'args.json'), 'w') as json_file:
         json.dump(args_dict, json_file, indent=4)
 
-
     # imitation learning phase
-
     train_dataloader = DataLoader(dataset, batch_size=args.train_batch_size, shuffle=True)
-
-
 
     # Evaluate untrained policy
     evaluations = []
     replay_buffer = ReplayBuffer(env.observation_space.shape[0], env.action_space.shape[0], device=args.device)
 
-    state, _ = env.reset(seed=42)
+    state, _ = env.reset(seed=args.seed)
     done = False
     episode_reward = 0
     episode_timesteps = 0
@@ -190,12 +193,12 @@ if __name__ == '__main__':
     # with open(os.path.join(log_path, 'train_params.yaml'), 'w') as fp:
     #     yaml.dump(kwargs, fp, default_flow_style=False)
 
-    for t in range(int(args.max_timesteps + args.start_timesteps)):
+    for t in range(int(args.max_timesteps)):
 
         episode_timesteps += 1
 
         # Select action randomly or according to policy
-        if t < 2000:
+        if t < args.random_action_steps:
             action = env.action_space.sample()
         else:
             action = imitator.select_action(state, explore=True)
@@ -242,7 +245,7 @@ if __name__ == '__main__':
         # Evaluate episode
         if (t + 1) % args.eval_freq == 0 and t > args.start_timesteps:
             steps_per_sec = timer.steps_per_sec(t + 1)
-            eval_len, eval_ret, _, _ = eval_policy(imitator, eval_env, eval_episodes=10, seed=42)
+            eval_len, eval_ret, _, _ = eval_policy(imitator, eval_env, eval_episodes=10, seed=args.seed)
             evaluations.append(eval_ret)
 
             if t >= args.start_timesteps:
@@ -259,7 +262,7 @@ if __name__ == '__main__':
 
             best_eval_reward = max(evaluations)
 
-        if (t + 1) % 20 == 0:
+        if (t + 1) % 50 == 0:
             for key, value in info.items():
                 if 'dist' not in key:
                     summary_writer.add_scalar(f'info/{key}', value, t * 5 + 1)
