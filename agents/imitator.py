@@ -214,7 +214,8 @@ class ReprValueDICEImitator(ValuDICEImitator):
         self.phi = MLP(input_dim=state_dim + action_dim,
                        hidden_dim=hidden_dim,
                        hidden_depth=hidden_depth,
-                       output_dim=embedding_dim).to(device=self.device)
+                       output_dim=embedding_dim,
+                       output_bias=False).to(device=self.device)
         self.mu = MLP(input_dim=state_dim,
                       hidden_dim=hidden_dim,
                       hidden_depth=hidden_depth,
@@ -320,30 +321,30 @@ class ReprValueDICEImitator(ValuDICEImitator):
         return to_np(action[0])
 
     def get_nu(self, sa):
-        # with torch.no_grad():
-        phi = self.phi(sa)
+        with torch.no_grad():
+            phi = self.phi(sa)
         log_zeta = self.log_zeta(sa)
         q = torch.vmap(torch.inner, in_dims=(0, None))(phi, self.phi_weights).unsqueeze(dim=1) + log_zeta
         return q
 
-    def get_d_ratio(self, state):
-        with torch.no_grad():
-            mu = self.get_mu(state)
-        d_ratio = torch.vmap(torch.inner, in_dims=(0, None))(mu, self.mu_weights).clamp(min=1e-8)
-        return d_ratio
+    # def get_d_ratio(self, state):
+    #     with torch.no_grad():
+    #         mu = self.get_mu(state)
+    #     d_ratio = torch.vmap(torch.inner, in_dims=(0, None))(mu, self.mu_weights).clamp(min=1e-8)
+    #     return d_ratio
 
     # def get_d_sa_ratio(self, state, action):
     #     sa = torch.hstack((state, action))
     #     return (self.get_d_ratio(state) * self.pi_ratio(sa).squeeze()).clamp(min=1e-8)
 
-    def get_primal_dual_loss(self, state, action, next_state, next_action, init_state, initial_action, discount):
-
-        reward = -torch.log(self.get_d_sa_ratio(state, action))
-        bellman_residual = reward + discount * self.get_nu(next_state, next_action) - self.get_nu(state, action)
-        primal_dual_loss = ((1 - discount) * self.get_nu(init_state, initial_action).mean()
-                            + torch.mean(self.get_d_ratio(state) * bellman_residual))
-
-        return primal_dual_loss
+    # def get_primal_dual_loss(self, state, action, next_state, next_action, init_state, initial_action, discount):
+    #
+    #     reward = -torch.log(self.get_d_sa_ratio(state, action))
+    #     bellman_residual = reward + discount * self.get_nu(next_state, next_action) - self.get_nu(state, action)
+    #     primal_dual_loss = ((1 - discount) * self.get_nu(init_state, initial_action).mean()
+    #                         + torch.mean(self.get_d_ratio(state) * bellman_residual))
+    #
+    #     return primal_dual_loss
 
     # def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.05, nu_reg = 10):
     #     """
@@ -526,7 +527,7 @@ class ReprValueDICEImitator(ValuDICEImitator):
         nu_next_inter = alpha * expert_next_inputs + (1 - alpha) * rb_next_inputs
         nu_inter = torch.vstack((nu_inter, nu_next_inter))
 
-        nu_grad = torch.autograd.grad(self.nu(nu_inter).sum(), nu_inter,create_graph=True)[0]
+        nu_grad = torch.autograd.grad(self.get_nu(nu_inter).sum(), nu_inter, create_graph=True)[0]
         nu_grad_penalty = torch.mean(
             torch.square(torch.norm(nu_grad, dim=-1, keepdim=True) - 1))
 
