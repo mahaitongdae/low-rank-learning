@@ -73,7 +73,7 @@ if __name__ == '__main__':
                         help='the number of initial steps that collects data via random sampled actions.')  # Time steps initial random policy is used
     parser.add_argument("--eval_freq", default=1000, type=int,
                         help='number of iterations as the interval to evaluate trained policy.')  # How often (time steps) we evaluate
-    parser.add_argument("--repr_iters", default=500, type=int,
+    parser.add_argument("--repr_iters", default=2e3, type=int,
                         help="the total iteration of representation learning.")
     parser.add_argument("--random_action_steps", default=2e3, type=int,
                         help="First how many iterations do random sampling.")
@@ -94,19 +94,23 @@ if __name__ == '__main__':
     ### set env and collect data
 
     assert args.env_id == 'HalfCheetah-v2' # we currently only use this one
-    # (expert_initial_states, expert_states, expert_actions, expert_next_states, expert_dones) = load_d4rl_data(
-    #     dataset_dir, args.env_id,
-    #     args.expert_dataset_name,
-    #     args.expert_num_traj, start_idx=0)
-    (expert_states, expert_actions, expert_next_states,
-     expert_dones) = load_expert_data('datasets/HalfCheetah-v2.npz')
+    (expert_initial_states, expert_states, expert_actions, expert_next_states, expert_dones) = load_d4rl_data(
+        dataset_dir, args.env_id,
+        args.expert_dataset_name,
+        args.expert_num_traj, start_idx=0)
+    # (expert_states, expert_actions, expert_next_states,
+    #  expert_dones) = load_expert_data('datasets/HalfCheetah-v2.npz')
+    # (expert_states, expert_actions, expert_next_states,
+    #  expert_dones) = subsample_trajectories(expert_states,
+    #                                         expert_actions,
+    #                                         expert_next_states,
+    #                                         expert_dones,
+    #                                         args.expert_num_traj)
+    # (expert_init_states, expert_states, expert_actions, expert_next_states,
+    #  expert_dones) = load_d4rl_data(dataset_dir, args.env_id, args.expert_dataset_name, args.expert_num_traj)
 
-    (expert_states, expert_actions, expert_next_states,
-     expert_dones) = subsample_trajectories(expert_states,
-                                                       expert_actions,
-                                                       expert_next_states,
-                                                       expert_dones,
-                                                       args.expert_num_traj)
+
+
 
     shift = -np.mean(expert_states, 0)
     scale = 1.0 / (np.std(expert_states, 0) + 1e-3)
