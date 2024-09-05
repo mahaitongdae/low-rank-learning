@@ -27,7 +27,8 @@ if __name__ == '__main__':
     # Tasks
     parser.add_argument('--env_id', default='HalfCheetah-v2', type=str)
     parser.add_argument('--expert_dataset_name', default="expert-v2")
-    parser.add_argument('--expert_num_traj', default=20, type=int)
+    parser.add_argument('--additional_dataset_num', type=int, default=2)
+    parser.add_argument('--expert_num_traj', default=1, type=int)
     parser.add_argument('--seed', default=42, type=int)
     # parser.add_argument('--logprob_regularization', action='store_true')
     # parser.set_defaults(logprob_regularization=True)
@@ -73,7 +74,7 @@ if __name__ == '__main__':
                         help='the number of initial steps that collects data via random sampled actions.')  # Time steps initial random policy is used
     parser.add_argument("--eval_freq", default=1000, type=int,
                         help='number of iterations as the interval to evaluate trained policy.')  # How often (time steps) we evaluate
-    parser.add_argument("--repr_iters", default=2e3, type=int,
+    parser.add_argument("--repr_iters", default=5e3, type=int,
                         help="the total iteration of representation learning.")
     parser.add_argument("--random_action_steps", default=2e3, type=int,
                         help="First how many iterations do random sampling.")
@@ -94,18 +95,18 @@ if __name__ == '__main__':
     ### set env and collect data
 
     assert args.env_id == 'HalfCheetah-v2' # we currently only use this one
-    (expert_initial_states, expert_states, expert_actions, expert_next_states, expert_dones) = load_d4rl_data(
-        dataset_dir, args.env_id,
-        args.expert_dataset_name,
-        args.expert_num_traj, start_idx=0)
-    # (expert_states, expert_actions, expert_next_states,
-    #  expert_dones) = load_expert_data('datasets/HalfCheetah-v2.npz')
-    # (expert_states, expert_actions, expert_next_states,
-    #  expert_dones) = subsample_trajectories(expert_states,
-    #                                         expert_actions,
-    #                                         expert_next_states,
-    #                                         expert_dones,
-    #                                         args.expert_num_traj)
+    # (expert_initial_states, expert_states, expert_actions, expert_next_states, expert_dones) = load_d4rl_data(
+    #     dataset_dir, args.env_id,
+    #     args.expert_dataset_name,
+    #     args.expert_num_traj, start_idx=0)
+    (expert_states, expert_actions, expert_next_states,
+     expert_dones) = load_expert_data('datasets/HalfCheetah-v2.npz')
+    (expert_states, expert_actions, expert_next_states,
+     expert_dones) = subsample_trajectories(expert_states,
+                                            expert_actions,
+                                            expert_next_states,
+                                            expert_dones,
+                                            args.expert_num_traj)
     # (expert_init_states, expert_states, expert_actions, expert_next_states,
     #  expert_dones) = load_d4rl_data(dataset_dir, args.env_id, args.expert_dataset_name, args.expert_num_traj)
 
@@ -126,17 +127,47 @@ if __name__ == '__main__':
                                                      expert_next_states,
                                                      expert_dones, env)
 
+    expert_dataset = TransitionDatasetfromD4RL(expert_states=expert_states,
+                                               expert_actions=expert_actions,
+                                               expert_next_states=expert_next_states,
+                                               device=torch.device(args.device))
 
-    dataset = TransitionDatasetfromD4RL(expert_states=expert_states,
-                                        expert_actions=expert_actions,
-                                        expert_next_states=expert_next_states,
-                                        device=torch.device(args.device))
-    noise_dataset = NoiseDataset4Repr(noise_states=expert_states, device=torch.device(args.device))
 
-    ### initial training
+    if args.additional_dataset_num > 0:
+        all_states = [expert_states]
+        all_actions = [expert_actions]
+        all_next_states = [expert_next_states]
+        all_dones = [expert_dones]
+        imperfect_dataset_path = os.path.join(root_dir, 'datasets/imperfect')
+        imperfect_datasets = sorted(os.listdir(imperfect_dataset_path))[:args.additional_dataset_num]
+        for imperfect_dataset in imperfect_datasets:
+            states, actions, next_states, dones = load_expert_data(os.path.join(imperfect_dataset_path, imperfect_dataset))
+            states, actions, next_states, dones = subsample_trajectories(states, actions, next_states,
+                                                                         dones, 5)
+            states, actions, next_states, dones = add_absorbing_states(states, actions, next_states,dones, env)
+            all_states.append(states)
+            all_actions.append(actions)
+            all_next_states.append(next_states)
+            all_dones.append(dones)
+        all_states = np.concatenate(all_states)
+        all_actions = np.concatenate(all_actions)
+        all_next_states = np.concatenate(all_next_states)
+        all_dones = np.concatenate(all_dones)
+        repr_dataset = TransitionDatasetfromD4RL(expert_states=all_states,
+                                                 expert_actions=all_actions,
+                                                 expert_next_states=all_next_states,
+                                                 device=torch.device(args.device))
+        ### initial training
+        noise_dataset = NoiseDataset4Repr(noise_states=all_states, device=torch.device(args.device))
+        train_dataloader = DataLoader(repr_dataset, batch_size=args.train_batch_size, shuffle=True)
+        noise_dataloader = DataLoader(noise_dataset, batch_size=args.train_batch_size, shuffle=True)
 
-    train_dataloader = DataLoader(dataset, batch_size=args.train_batch_size, shuffle=True)
-    noise_dataloader = DataLoader(noise_dataset, batch_size=args.train_batch_size, shuffle=True)
+    else:
+        ## only expert data
+
+        noise_dataset = NoiseDataset4Repr(noise_states=expert_states, device=torch.device(args.device))
+        train_dataloader = DataLoader(expert_dataset, batch_size=args.train_batch_size, shuffle=True)
+        noise_dataloader = DataLoader(noise_dataset, batch_size=args.train_batch_size, shuffle=True)
     # len(train_dataloader)
     epoch = 10
     if args.imitator == 'repr_value_dice':
@@ -175,7 +206,7 @@ if __name__ == '__main__':
         json.dump(args_dict, json_file, indent=4)
 
     # imitation learning phase
-    train_dataloader = DataLoader(dataset, batch_size=args.train_batch_size, shuffle=True)
+    train_dataloader = DataLoader(expert_dataset, batch_size=args.train_batch_size, shuffle=True)
 
     # Evaluate untrained policy
     evaluations = []
