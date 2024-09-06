@@ -20,14 +20,14 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # Pipelines
-    parser.add_argument("--device", default='cuda', type=str)
+    parser.add_argument("--device", default='cpu', type=str)
     parser.add_argument("--train_batches", default=20000, type=int)
     parser.add_argument("--train_batch_size", default=256, type=int)
 
     # Tasks
     parser.add_argument('--env_id', default='HalfCheetah-v2', type=str)
     parser.add_argument('--expert_dataset_name', default="expert-v2")
-    parser.add_argument('--additional_dataset_num', type=int, default=2)
+    parser.add_argument('--additional_dataset_num', type=int, default=0)
     parser.add_argument('--expert_num_traj', default=1, type=int)
     parser.add_argument('--seed', default=42, type=int)
     # parser.add_argument('--logprob_regularization', action='store_true')
@@ -89,7 +89,15 @@ if __name__ == '__main__':
     alg_dir = os.path.join(log_dir, f'{args.env_id}/{args.imitator}')
     exp_dir = os.path.join(alg_dir, f'{datetime.now().strftime("%Y-%m-%d-%H-%M-%S")}')
     os.makedirs(exp_dir, exist_ok=True)
-    summary_writer = SummaryWriter(exp_dir)
+    hparam_str_dict = dict(
+        seed=args.seed,
+        algo=args.imitator,
+        env_name=args.env_id,
+        num_traj=args.expert_num_traj,
+        additional_dataset_num=args.additional_dataset_num,)
+    hparam_str = ','.join(['%s=%s' % (k, str(hparam_str_dict[k])) for k in
+                           sorted(hparam_str_dict.keys())])
+    summary_writer = SummaryWriter(exp_dir, filename_suffix=hparam_str)
     dataset_dir = os.path.join(root_dir, 'datasets/imitation')
 
     ### set env and collect data
