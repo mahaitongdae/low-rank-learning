@@ -1,3 +1,5 @@
+import time
+
 from utils import TransitionDataset, LabeledTransitionDataset, TransitionDatasetfromD4RL, NoiseDataset4Repr
 from data_utils import load_d4rl_data, add_absorbing_states, load_expert_data, subsample_trajectories
 import torch
@@ -15,6 +17,7 @@ import gymnasium
 from utils import Timer
 from utilities.eval import eval_policy
 from envs.wrappers import create_il_env
+import time
 
 if __name__ == '__main__':
 
@@ -28,7 +31,7 @@ if __name__ == '__main__':
     parser.add_argument('--env_id', default='HalfCheetah-v2', type=str)
     parser.add_argument('--expert_dataset_name', default="expert-v2")
     parser.add_argument('--additional_dataset_num', type=int, default=0)
-    parser.add_argument('--expert_num_traj', default=1, type=int)
+    parser.add_argument('--expert_num_traj', default=40, type=int)
     parser.add_argument('--seed', default=42, type=int)
     # parser.add_argument('--logprob_regularization', action='store_true')
     # parser.set_defaults(logprob_regularization=True)
@@ -53,11 +56,10 @@ if __name__ == '__main__':
     parser.add_argument("--preprocess", default='none', type=str)
 
     ## Estimators general
-    parser.add_argument('--imitator', default='repr_value_dice', type=str)
+    parser.add_argument('--imitator', default='value_dice', type=str)
     parser.add_argument('--repr_lr', default=3e-4, type=float)
     parser.add_argument('--nu_lr', default=1e-3, type=float)
     parser.add_argument('--policy_lr', default=1e-5, type=float)
-    
 
     parser.add_argument('--feature_dim', default=1024, type=int)
     parser.add_argument('--hidden_dim', default=256, type=int)
@@ -74,7 +76,7 @@ if __name__ == '__main__':
                         help='the number of initial steps that collects data via random sampled actions.')  # Time steps initial random policy is used
     parser.add_argument("--eval_freq", default=1000, type=int,
                         help='number of iterations as the interval to evaluate trained policy.')  # How often (time steps) we evaluate
-    parser.add_argument("--repr_iters", default=5e3, type=int,
+    parser.add_argument("--repr_iters", default=10, type=int,
                         help="the total iteration of representation learning.")
     parser.add_argument("--random_action_steps", default=2e3, type=int,
                         help="First how many iterations do random sampling.")
@@ -85,7 +87,7 @@ if __name__ == '__main__':
 
     ### set file path
     root_dir = os.path.dirname(os.path.abspath(__file__))
-    log_dir =os.path.join(root_dir, 'log')
+    log_dir = os.path.join(root_dir, 'log')
     alg_dir = os.path.join(log_dir, f'{args.env_id}/{args.imitator}')
     exp_dir = os.path.join(alg_dir, f'{datetime.now().strftime("%Y-%m-%d-%H-%M-%S")}')
     os.makedirs(exp_dir, exist_ok=True)
@@ -94,7 +96,7 @@ if __name__ == '__main__':
         algo=args.imitator,
         env_name=args.env_id,
         num_traj=args.expert_num_traj,
-        additional_dataset_num=args.additional_dataset_num,)
+        additional_dataset_num=args.additional_dataset_num, )
     hparam_str = ','.join(['%s=%s' % (k, str(hparam_str_dict[k])) for k in
                            sorted(hparam_str_dict.keys())])
     summary_writer = SummaryWriter(exp_dir, filename_suffix=hparam_str)
@@ -102,7 +104,7 @@ if __name__ == '__main__':
 
     ### set env and collect data
 
-    assert args.env_id == 'HalfCheetah-v2' # we currently only use this one
+    assert args.env_id == 'HalfCheetah-v2'  # we currently only use this one
     # (expert_initial_states, expert_states, expert_actions, expert_next_states, expert_dones) = load_d4rl_data(
     #     dataset_dir, args.env_id,
     #     args.expert_dataset_name,
@@ -118,9 +120,6 @@ if __name__ == '__main__':
     # (expert_init_states, expert_states, expert_actions, expert_next_states,
     #  expert_dones) = load_d4rl_data(dataset_dir, args.env_id, args.expert_dataset_name, args.expert_num_traj)
 
-
-
-
     shift = -np.mean(expert_states, 0)
     scale = 1.0 / (np.std(expert_states, 0) + 1e-3)
     expert_states = (expert_states + shift) * scale
@@ -131,15 +130,14 @@ if __name__ == '__main__':
 
     (expert_states, expert_actions, expert_next_states,
      expert_dones) = add_absorbing_states(expert_states,
-                                                     expert_actions,
-                                                     expert_next_states,
-                                                     expert_dones, env)
+                                          expert_actions,
+                                          expert_next_states,
+                                          expert_dones, env)
 
     expert_dataset = TransitionDatasetfromD4RL(expert_states=expert_states,
                                                expert_actions=expert_actions,
                                                expert_next_states=expert_next_states,
                                                device=torch.device(args.device))
-
 
     if args.additional_dataset_num > 0:
         all_states = [expert_states]
@@ -149,10 +147,11 @@ if __name__ == '__main__':
         imperfect_dataset_path = os.path.join(root_dir, 'datasets/imperfect')
         imperfect_datasets = sorted(os.listdir(imperfect_dataset_path))[:args.additional_dataset_num]
         for imperfect_dataset in imperfect_datasets:
-            states, actions, next_states, dones = load_expert_data(os.path.join(imperfect_dataset_path, imperfect_dataset))
+            states, actions, next_states, dones = load_expert_data(
+                os.path.join(imperfect_dataset_path, imperfect_dataset))
             states, actions, next_states, dones = subsample_trajectories(states, actions, next_states,
                                                                          dones, 5)
-            states, actions, next_states, dones = add_absorbing_states(states, actions, next_states,dones, env)
+            states, actions, next_states, dones = add_absorbing_states(states, actions, next_states, dones, env)
             all_states.append(states)
             all_actions.append(actions)
             all_next_states.append(next_states)
@@ -187,18 +186,18 @@ if __name__ == '__main__':
                                          **vars(args))
     elif args.imitator == 'value_dice':
         imitator = ValuDICEImitator(state_dim=expert_states.shape[-1],
-                                       action_dim=expert_actions.shape[-1],
+                                    action_dim=expert_actions.shape[-1],
                                     **vars(args))
     else:
         raise NotImplementedError
 
     if args.imitator == "repr_value_dice":
         for batch in range(int(args.repr_iters)):
-            
+
             info = imitator.learn_repr(train_dataloader, noise_dataloader)
             for key, value in info.items():
                 if 'dist' in key:
-                    summary_writer.add_histogram(key, value, batch+1)
+                    summary_writer.add_histogram(key, value, batch + 1)
                 else:
                     summary_writer.add_scalar(key, value, batch + 1)
             summary_writer.flush()
@@ -237,7 +236,7 @@ if __name__ == '__main__':
     #     yaml.dump(kwargs, fp, default_flow_style=False)
 
     for t in range(int(args.max_timesteps)):
-
+        # start_iter_time = time.time()
         episode_timesteps += 1
 
         # Select action randomly or according to policy
@@ -257,11 +256,13 @@ if __name__ == '__main__':
         state = next_state
         episode_reward += reward
         info = {}
-
         if t >= args.start_timesteps:
             rb_batch = replay_buffer.sample(args.train_batch_size)
             for _ in range(5):
+                # start_time = time.time()
                 info = imitator.imitate(train_dataloader, rb_batch, 0.99)
+                # end_time = time.time()
+                # print(f"imitate time: {end_time - start_time}")
 
         if done:
             if terminated:
@@ -272,7 +273,8 @@ if __name__ == '__main__':
                         obs = env.get_absorbing_state()
                         action = env.action_space.sample()
                         next_obs = env.get_absorbing_state()
-                        replay_buffer.add(obs, action, next_obs, reward, True) # we will not use reward and done in the rb
+                        replay_buffer.add(obs, action, next_obs, reward,
+                                          True)  # we will not use reward and done in the rb
             # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
             print(
                 f"Total T: {t + 1} Episode Num: {episode_num + 1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f} Info: {rollout_info}")
@@ -313,6 +315,9 @@ if __name__ == '__main__':
                     for dist_key, dist_val in value.items():
                         summary_writer.add_histogram(dist_key, dist_val, t + 1)
             summary_writer.flush()
+
+        # end_iter_time = time.time()
+        # print(f"total iter time: {end_iter_time - start_iter_time}")
 
     summary_writer.close()
 
