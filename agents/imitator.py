@@ -1,3 +1,5 @@
+import time
+
 from agents.estimator import SpectralSVDEstimator
 import torch
 from utils import MLP, LearnableRandomFeature, NormalizedMLP
@@ -84,44 +86,34 @@ class ValuDICEImitator(torch.nn.Module):
         assert action.ndim == 2 and action.shape [0] == 1
         return to_np(action[0])
 
-    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.05, nu_reg = 10.0):
-        """
-        pytorch version of ValueDICE,
-        Parameters
-        ----------
-        expert_data
-        policy_data
-        discount
-        replay_regularization
-        nu_reg
+    def get_nu(self, inputs):
+        return self.nu(inputs)
 
-        Returns
-        -------
+    def get_value_dice_loss(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.05, nu_reg = 10.0):
 
-        """
 
         expert_data = next(iter(expert_dataloader))
 
         expert_states, expert_actions, expert_next_states = (expert_data[:, :self.state_dim],
-                                                             expert_data[:,  self.state_dim: self.state_dim + self.action_dim],
-                                                             expert_data[:,  self.state_dim + self.action_dim:])
-
+                                                             expert_data[:,
+                                                             self.state_dim: self.state_dim + self.action_dim],
+                                                             expert_data[:, self.state_dim + self.action_dim:])
 
         rb_states, rb_actions, rb_next_states, _, _ = unpack_batch(rb_batch)
 
         expert_next_actions_dist = self.actor(expert_next_states)
         expert_next_actions = expert_next_actions_dist.rsample()
 
-        rb_next_actions_dist = self.actor(expert_next_states)
+        rb_next_actions_dist = self.actor(rb_next_states)
         rb_next_actions = rb_next_actions_dist.rsample().clamp(min=-1 + 1e-6, max=1 - 1e-6)
         log_prob = rb_next_actions_dist.log_prob(rb_next_actions).sum(-1, keepdim=True)
 
         expert_initial_states = expert_states.clone()
         exp_a0_dist = self.actor(expert_initial_states)
         exp_a0 = exp_a0_dist.rsample()
-        rb_initial_states = rb_states.clone()
-        rb_a0_dist = self.actor(rb_initial_states)
-        rb_a0 = rb_a0_dist.rsample()
+        # rb_initial_states = rb_states.clone()
+        # rb_a0_dist = self.actor(rb_initial_states)
+        # rb_a0 = rb_a0_dist.rsample()
 
         expert_init_sa = torch.hstack((expert_initial_states, exp_a0))
         expert_inputs_sa = torch.hstack((expert_states, expert_actions))
@@ -130,12 +122,18 @@ class ValuDICEImitator(torch.nn.Module):
         rb_inputs_sa = torch.hstack((rb_states, rb_actions))
         rb_next_inputs = torch.hstack((rb_next_states, rb_next_actions))
 
-        expert_nu_0 = self.nu(expert_init_sa)
-        expert_nu = self.nu(expert_inputs_sa)
-        expert_nu_next = self.nu(expert_next_inputs)
+        inputs = torch.vstack([expert_init_sa, expert_inputs_sa, expert_next_inputs, rb_inputs_sa, rb_next_inputs])
 
-        rb_nu = self.nu(rb_inputs_sa)
-        rb_nu_next = self.nu(rb_next_inputs)
+        # expert_nu_0 = self.get_nu(expert_init_sa)
+        # expert_nu = self.get_nu(expert_inputs_sa)
+        # expert_nu_next = self.get_nu(expert_next_inputs)
+        #
+        # rb_nu = self.get_nu(rb_inputs_sa)
+        # rb_nu_next = self.get_nu(rb_next_inputs)
+        nu_output = self.get_nu(inputs)
+        expert_nu_0, expert_nu, expert_nu_next, rb_nu, rb_nu_next = torch.split(nu_output,
+                                                                                len(expert_inputs_sa),
+                                                                                dim=0)
 
         expert_diff = expert_nu - discount * expert_nu_next
         rb_diff = rb_nu - discount * rb_nu_next
@@ -158,7 +156,7 @@ class ValuDICEImitator(torch.nn.Module):
         linear_loss = linear_loss_expert * (1 - replay_regularization) + linear_loss_rb * replay_regularization
 
         loss = nonlinear_loss - linear_loss
-
+        # print("time_before_grad_pen", time.time() - start_time)
         '''
         Gradient penalty from
         Gulrajani, I., Ahmed, F., Arjovsky, M., Dumoulin, V. and Courville, A.C., 2017. Improved training of wasserstein gans. Advances in neural information processing systems, 30.
@@ -170,20 +168,44 @@ class ValuDICEImitator(torch.nn.Module):
         nu_next_inter = alpha * expert_next_inputs + (1 - alpha) * rb_next_inputs
         nu_inter = torch.vstack((nu_inter, nu_next_inter))
 
-        nu_grad = torch.autograd.grad(self.nu(nu_inter).sum(), nu_inter,create_graph=True)[0]
+        nu_grad = torch.autograd.grad(self.get_nu(nu_inter).sum(), nu_inter, create_graph=True)[0]
         nu_grad_penalty = torch.mean(
             torch.square(torch.norm(nu_grad, dim=-1, keepdim=True) - 1))
+        # print("time_after_grad_pen", time.time() - start_time)
 
         nu_loss = loss + nu_grad_penalty * nu_reg
-        pi_loss = -1 * loss + orthogonal_regularization(self.actor.trunk, self.device) # + self.alpha.detach() * log_prob.mean() #
+        pi_loss = -1 * loss + orthogonal_regularization(self.actor.trunk,
+                                                        self.device)  # + self.alpha.detach() * log_prob.mean() #
 
-        # self.log_alpha_optimizer.zero_grad()
-        # alpha_loss = (self.alpha *
-        #               (-log_prob - self.target_entropy).detach()).mean()
-        # alpha_loss.backward()
-        # self.log_alpha_optimizer.step()
+        info = {'loss': loss.item(), 'nu_expert': expert_nu.mean().item(), 'nu_rb': rb_nu.mean().item(),
+                'nu_grad_penalty': nu_grad_penalty.item(),
+                'actor_loss': pi_loss.item(),
+                'policy_entropy': -1 * log_prob.mean().item(),
+                # 'alpha_loss': alpha_loss,
+                # 'alpha': self.alpha
+                }
+
+        return nu_loss, pi_loss, info
+
+    def imitate(self, expert_dataloader, rb_batch, discount, replay_regularization = 0.05, nu_reg = 10.0):
+        """
+        pytorch version of ValueDICE,
+        Parameters
+        ----------
+        expert_data
+        policy_data
+        discount
+        replay_regularization
+        nu_reg
+
+        Returns
+        -------
+
+        """
 
 
+        nu_loss, pi_loss, info = self.get_value_dice_loss(expert_dataloader, rb_batch, discount, replay_regularization, nu_reg)
+        start_time = time.time()
         self.nu_optimizer.zero_grad()
         nu_loss.backward(retain_graph=True, inputs=list(self.nu.parameters()))
 
@@ -191,14 +213,9 @@ class ValuDICEImitator(torch.nn.Module):
         pi_loss.backward(inputs=list(self.actor.parameters()))
         self.nu_optimizer.step()
         self.actor_optimizer.step()
+        print("time_after_backprop", time.time() - start_time)
 
-        return {'loss': loss.item(), 'nu_expert': expert_nu.mean().item(), 'nu_rb': rb_nu.mean().item(),
-                'nu_grad_penalty': nu_grad_penalty.item(),
-                'actor_loss': pi_loss.item(),
-                'policy_entropy': -1 * log_prob.mean().item(),
-                # 'alpha_loss': alpha_loss,
-                # 'alpha': self.alpha
-                }
+        return info
 
 
 class ReprValueDICEImitator(ValuDICEImitator):
@@ -456,7 +473,6 @@ class ReprValueDICEImitator(ValuDICEImitator):
         -------
 
         """
-
         expert_data = next(iter(expert_dataloader))
 
         expert_states, expert_actions, expert_next_states = (expert_data[:, :self.state_dim],
@@ -464,7 +480,7 @@ class ReprValueDICEImitator(ValuDICEImitator):
                                                              expert_data[:,  self.state_dim + self.action_dim:])
 
 
-        rb_states, rb_actions, rb_next_states, _, _ = unpack_batch(rb_batch)
+
 
         expert_next_actions_dist = self.actor(expert_next_states)
         expert_next_actions = expert_next_actions_dist.rsample()
@@ -476,43 +492,62 @@ class ReprValueDICEImitator(ValuDICEImitator):
         expert_initial_states = expert_states.clone()
         exp_a0_dist = self.actor(expert_initial_states)
         exp_a0 = exp_a0_dist.rsample()
-        rb_initial_states = rb_states.clone()
-        rb_a0_dist = self.actor(rb_initial_states)
-        rb_a0 = rb_a0_dist.rsample()
 
         expert_init_sa = torch.hstack((expert_initial_states, exp_a0))
         expert_inputs_sa = torch.hstack((expert_states, expert_actions))
         expert_next_inputs = torch.hstack((expert_next_states, expert_next_actions))
 
-        rb_inputs_sa = torch.hstack((rb_states, rb_actions))
-        rb_next_inputs = torch.hstack((rb_next_states, rb_next_actions))
-
         expert_nu_0 = self.get_nu(expert_init_sa)
         expert_nu = self.get_nu(expert_inputs_sa)
         expert_nu_next = self.get_nu(expert_next_inputs)
 
-        rb_nu = self.get_nu(rb_inputs_sa)
-        rb_nu_next = self.get_nu(rb_next_inputs)
 
         expert_diff = expert_nu - discount * expert_nu_next
-        rb_diff = rb_nu - discount * rb_nu_next
+
 
         linear_loss_expert = torch.mean(expert_nu_0 * (1 - discount))
-        linear_loss_rb = rb_diff.mean()
 
-        rb_expert_diff = torch.vstack((expert_diff, rb_diff))
-        rb_expert_weights = torch.vstack([
-            torch.ones_like(expert_diff) * (1 - replay_regularization),
-            torch.ones_like(rb_diff) * replay_regularization,
-        ])
-        rb_expert_weights = rb_expert_weights / rb_expert_weights.sum()
+        if replay_regularization > 0:
+            rb_states, rb_actions, rb_next_states, _, _ = unpack_batch(rb_batch)
+            # rb_initial_states = rb_states.clone()
+            # rb_a0_dist = self.actor(rb_initial_states)
+            # rb_a0 = rb_a0_dist.rsample()
+            rb_inputs_sa = torch.hstack((rb_states, rb_actions))
+            rb_next_inputs = torch.hstack((rb_next_states, rb_next_actions))
+            rb_nu = self.get_nu(rb_inputs_sa)
+            rb_nu_next = self.get_nu(rb_next_inputs)
+            rb_diff = rb_nu - discount * rb_nu_next
+            linear_loss_rb = rb_diff.mean()
 
-        with torch.no_grad():
-            w_softmax = weighted_softmax(rb_expert_diff, rb_expert_weights, dim=0)
+            rb_expert_diff = torch.vstack((expert_diff, rb_diff))
+            rb_expert_weights = torch.vstack([
+                torch.ones_like(expert_diff) * (1 - replay_regularization),
+                torch.ones_like(rb_diff) * replay_regularization,
+            ])
+            rb_expert_weights = rb_expert_weights / rb_expert_weights.sum()
 
-        nonlinear_loss = (w_softmax * rb_expert_diff).sum()
+            with torch.no_grad():
+                w_softmax = weighted_softmax(rb_expert_diff, rb_expert_weights, dim=0)
 
-        linear_loss = linear_loss_expert * (1 - replay_regularization) + linear_loss_rb * replay_regularization
+            nonlinear_loss = (w_softmax * rb_expert_diff).sum()
+            linear_loss = linear_loss_expert * (1 - replay_regularization) + linear_loss_rb * replay_regularization
+
+            alpha = torch.rand((len(expert_inputs_sa), 1), device=self.device)
+            nu_inter = alpha * expert_inputs_sa + (1 - alpha) * rb_inputs_sa
+            nu_next_inter = alpha * expert_next_inputs + (1 - alpha) * rb_next_inputs
+            nu_inter = torch.vstack((nu_inter, nu_next_inter))
+
+        else:
+            with torch.no_grad():
+                w_softmax = weighted_softmax(expert_diff, torch.ones_like(expert_diff), dim=0)
+
+            nonlinear_loss = (w_softmax * expert_diff).sum()
+            linear_loss = linear_loss_expert.clone()
+
+            alpha = torch.rand((len(expert_inputs_sa), 1), device=self.device)
+            nu_inter = alpha * expert_inputs_sa # + (1 - alpha) * rb_inputs_sa
+            nu_next_inter = alpha * expert_next_inputs # + (1 - alpha) * rb_next_inputs
+            nu_inter = torch.vstack((nu_inter, nu_next_inter))
 
         loss = nonlinear_loss - linear_loss
 
@@ -522,10 +557,7 @@ class ReprValueDICEImitator(ValuDICEImitator):
         In pytorch implementation, we need to specify create_graph=True to create the graph of derivatives.
         '''
 
-        alpha = torch.rand((len(expert_inputs_sa), 1), device=self.device)
-        nu_inter = alpha * expert_inputs_sa + (1 - alpha) * rb_inputs_sa
-        nu_next_inter = alpha * expert_next_inputs + (1 - alpha) * rb_next_inputs
-        nu_inter = torch.vstack((nu_inter, nu_next_inter))
+
 
         nu_grad = torch.autograd.grad(self.get_nu(nu_inter).sum(), nu_inter, create_graph=True)[0]
         nu_grad_penalty = torch.mean(
@@ -554,9 +586,14 @@ class ReprValueDICEImitator(ValuDICEImitator):
         self.log_zeta_optimizer.step()
         self.actor_optimizer.step()
 
-        return {'loss': loss.item(),
+        # torch.cuda.synchronize()
+        # end_event.record()
+        # elapsed_time = start_event.elapsed_time(end_event)
+        # print(f": Time {elapsed_time}")
+
+        info = {'loss': loss.item(),
                 'nu_expert': expert_nu.mean().item(),
-                'nu_rb': rb_nu.mean().item(),
+
                 'nu_grad_penalty': nu_grad_penalty.item(),
                 'actor_loss': pi_loss.item(),
                 'policy_entropy': -1 * log_prob.mean().item(),
@@ -564,6 +601,11 @@ class ReprValueDICEImitator(ValuDICEImitator):
                 # 'alpha_loss': alpha_loss,
                 # 'alpha': self.alpha
                 }
+
+        if replay_regularization > 0:
+            info.update({'nu_rb': rb_nu.mean().item(),})
+
+        return info
 
     def load(self, exp_dir):
         # normalization_consts = torch.load(os.path.join(exp_dir, 'normalization.pth'))
