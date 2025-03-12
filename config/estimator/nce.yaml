@@ -1,0 +1,19 @@
+name: nce
+integral_normalization: false
+integral_normalization_weights: 0.1
+layer_normalization: true
+learnable_w: false
+logprob_regularization: false
+logprob_regularization_weights: 1.0
+nce_loss: spectral
+nce_lr: 3.0e-05
+noise_dist: uniform
+num_classes: 3
+pendulum_noise_dist: gaussian
+preprocess: none
+prob_labels: conditional
+sample: uniform_theta
+
+sigmoid_output: false
+sin_cos_obs: false
+

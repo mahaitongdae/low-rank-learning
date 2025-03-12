@@ -9,20 +9,22 @@ from tensorboardX import SummaryWriter
 import argparse
 import os
 from datetime import datetime
+from tqdm import tqdm
 import json
 import numpy as np
 # from evaluation import evaluate
+import yaml
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # Pipelines
     parser.add_argument("--device", default='cuda', type=str)
-    parser.add_argument("--train_batches", default=20000, type=int)
+    parser.add_argument("--train_batches", default=2000, type=int)
     parser.add_argument("--train_batch_size", default=1024, type=int)
 
     # Tasks
-    parser.add_argument('--dynamics', default='NoisyPendulum', type=str)
+    parser.add_argument('--dynamics', default='mvn', type=str)
     parser.add_argument('--sigma', default=4.0, type=float)
     parser.add_argument("--sample", default='uniform_theta', type=str,
                         help="how the s, a distribution is sampled, uniform_theta or uniform_sin_theta")
@@ -40,7 +42,7 @@ if __name__ == '__main__':
     parser.add_argument("--preprocess", default='none', type=str)
 
     ## Estimators general
-    parser.add_argument('--estimator', default='supervised_rf', type=str)
+    parser.add_argument('--estimator', default='nce', type=str)
     parser.add_argument('--lr', default=3e-4, type=float)
 
     parser.add_argument('--feature_dim', default=1024, type=int)
@@ -58,7 +60,7 @@ if __name__ == '__main__':
     parser.set_defaults(sigmoid_output=False)
 
     # NCE
-    parser.add_argument("--nce_loss", default='ranking', type=str,
+    parser.add_argument("--nce_loss", default='spectral', type=str,
                         help="loss function for noise contrastive learning, either binary or ranking or self_contrastive.")
     parser.add_argument("--nce_lr", default=3e-5, type=float)
     parser.add_argument("--noise_dist", default='uniform', type=str,
@@ -138,7 +140,8 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError
 
-    for batch, transition in enumerate(train_dataloader):
+    pbar = tqdm(train_dataloader, desc='Epoch')
+    for batch, transition in enumerate(pbar):
         info = estimator.estimate(transition)
         for key, value in info.items():
             if 'dist' in key:
@@ -146,15 +149,15 @@ if __name__ == '__main__':
             else:
                 summary_writer.add_scalar(key, value, batch + 1)
         summary_writer.flush()
-        print(f"Epoch {batch + 1}, loss {info.get('est_loss')}")
+        # print(f"Epoch {batch + 1}, loss {info.get('est_loss')}")
+        pbar.set_postfix(loss=info.get('est_loss'))
 
     estimator.save(exp_dir)
 
     # save dicts
     args_dict = vars(args)
-
-    with open(os.path.join(exp_dir, 'args.json'), 'w') as json_file:
-        json.dump(args_dict, json_file, indent=4)
+    with open(os.path.join(exp_dir, 'config.yaml'), 'w') as yaml_file:
+        yaml.dump(args_dict, yaml_file)
 
     ## Evaluations
 

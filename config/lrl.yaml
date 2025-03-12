@@ -1,0 +1,21 @@
+device: cuda
+dynamics: mvn
+train_batch_size: 1024
+train_batches: 2000
+lr: 0.0003
+sigma: 4.0
+seed: 0
+suffix: default
+
+# model
+feature_dim: 1024
+hidden_depth: 3
+hidden_dim: 512
+
+
+defaults:
+ - estimator: nce
+
+hydra:
+  run:
+    dir: ./log/${dynamics}/${estimator.name}/${now:%Y-%m-%d_%H-%M-%S}_s${seed}_${suffix} # wlayer${estimator.w_hidden_activation}_

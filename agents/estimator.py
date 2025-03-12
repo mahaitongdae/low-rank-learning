@@ -63,11 +63,11 @@ class DensityEstimator(object):
         # return prob
 
     def get_conditional_prob_via_approx_normalization(self, transition):
-        st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
-                        transition[:, self.state_dim + self.action_dim:])
-        phi_sa = 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
         prob = self.get_prob(transition)
         if self.kwargs.get('dynamics') == 'mvn':  # only has this for mvn.
+            st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
+                            transition[:, self.state_dim + self.action_dim:])
+            phi_sa = 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
             grid = np.linspace(-3, 3, 6 * 100)
             grid_tensor = torch.from_numpy(grid).reshape(-1, 1).float().to(self.device)
             mu_stp1_grid = 1 / (self.embedding_dim ** 0.5) * self.mu(grid_tensor)
@@ -290,6 +290,8 @@ class NCEEstimator(DensityEstimator):
         elif kwargs.get('dynamics') == 'mvn':
             self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0.], device=self.device),
                                                                 scale=torch.tensor([1.0], device=self.device))
+            # self.noise_dist = torch.distributions.uniform.Uniform(low=torch.tensor([-4.], device=self.device),
+            #                                                       high=torch.tensor([4.], device=self.device))
         else:
             raise NotImplementedError
         # else:
@@ -318,6 +320,8 @@ class NCEEstimator(DensityEstimator):
             nce_loss = self._binaryClassificationLoss(transition)
         elif self.kwargs.get('nce_loss') == 'self_contrastive':
             nce_loss = self._self_contrastive_loss(st_at, s_tp1)
+        elif self.kwargs.get('nce_loss') == 'spectral':
+            nce_loss = self._spectralDecompsitionLoss(transition)
         else:
             raise NotImplementedError('NCE loss not implemented')
         info.update({'est_loss': nce_loss.item()})
@@ -343,6 +347,17 @@ class NCEEstimator(DensityEstimator):
 
         return info
 
+    def get_conditional_prob_via_approx_normalization(self, transition):
+        prob = self.get_prob(transition)
+        if self.kwargs.get('dynamics') == 'mvn' and self.kwargs.get('nce_loss') == 'spectral':  # only has this for mvn.
+            st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
+                            transition[:, self.state_dim + self.action_dim:])
+            noise_prob = torch.exp(self.noise_dist.log_prob(s_tp1))
+            prob = prob * noise_prob # P(s'|s, a) / pn(s')
+            return prob
+        else:
+            raise NotImplementedError
+
     def get_log_prob(self, inputs):
         # st_at, s_tp1 = (inputs[:, :self.state_dim + self.action_dim],
         #                 inputs[:, self.state_dim + self.action_dim:])
@@ -367,6 +382,17 @@ class NCEEstimator(DensityEstimator):
         loss_fn = torch.nn.BCEWithLogitsLoss()
         loss = loss_fn(logits, labels)
         return loss
+
+    def _spectralDecompsitionLoss(self, inputs):
+        st_at, s_tp1 = (inputs[:, :self.state_dim + self.action_dim],
+                        inputs[:, self.state_dim + self.action_dim:])
+        noise = self.noise_dist.sample([len(inputs)])  # only numbers of samples in the batch
+        noised_transition = torch.hstack((st_at, noise))
+
+        pos_prob = self.get_prob(inputs)
+        neg_prob = self.get_prob(noised_transition)
+        loss = pos_prob * -2. + neg_prob ** 2 + torch.log(pos_prob) ** 2 * 10
+        return torch.mean(loss)
 
     def _rankingClassificationLoss(self, inputs):
         st_at, s_tp1 = (inputs[:, :self.state_dim + self.action_dim],
