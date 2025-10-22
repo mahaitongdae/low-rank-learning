@@ -46,6 +46,32 @@ class MVN(object):
 
         return dataset, prob_set
 
+class MVNContrasiveNormal(MVN):
+    def __init__(self, rollout_batch_size=512):
+        self.rs = np.random.RandomState()
+        super(MVNContrasiveNormal, self).__init__(rollout_batch_size=rollout_batch_size)
+
+    def get_neg_log_prob(self, samples):
+        return -0.5 * (np.log(2 * np.pi) + (samples ** 2))
+
+    def noise_sample(self,batches=200, seed = 0, store_path=None):
+        ptr = 0
+        dataset = np.zeros((batches * self.rollout_batch_size, 1))
+        prob_set = np.zeros((batches * self.rollout_batch_size,))
+        for i in range(batches):
+            neg_data = self.rs.normal(loc=0, scale=1, size=(self.rollout_batch_size, 1))
+            neg_prob = np.exp(self.get_neg_log_prob(neg_data)).squeeze()
+            dataset[ptr: ptr + self.rollout_batch_size] = neg_data
+            prob_set[ptr: ptr + self.rollout_batch_size] = neg_prob
+            ptr += self.rollout_batch_size
+
+        if store_path is not None and isinstance(store_path, str):
+            os.makedirs(store_path, exist_ok=True)
+            np.save(os.path.join(store_path, 'neg_tran_normal.npy'), dataset)
+            np.save(os.path.join(store_path, 'neg_prob_normal.npy'), prob_set)
+
+        return dataset, prob_set
+
 class MVNUniform(MVN):
 
     def sample(self,batches=200, seed = 0, store_path=None):
@@ -68,7 +94,61 @@ class MVNUniform(MVN):
             seed += 1
 
         if store_path is not None and isinstance(store_path, str):
-            np.save(os.path.join(store_path, 'tran_normal.npy'), dataset)
-            np.save(os.path.join(store_path, 'prob_normal.npy'), prob_set)
+            np.save(os.path.join(store_path, 'tran_mvn_uniform.npy'), dataset)
+            np.save(os.path.join(store_path, 'prob_mvn_uniform.npy'), prob_set)
+
+        return dataset, prob_set
+
+class MVNUniformContrastiveNormal(MVNUniform):
+
+    def __init__(self, rollout_batch_size = 512):
+        self.rs = np.random.RandomState()
+        super(MVNUniformContrastiveNormal, self).__init__(rollout_batch_size=rollout_batch_size)
+
+    def get_neg_log_prob(self, samples):
+        return -0.5 * (np.log(2 * np.pi) + (samples ** 2))
+
+    def noise_sample(self, batches = 200, seed = 0, store_path = None):
+        ptr = 0
+        dataset = np.zeros((batches * self.rollout_batch_size, 1))
+        prob_set = np.zeros((batches * self.rollout_batch_size,))
+        for i in range(batches):
+            neg_data = self.rs.normal(loc=0, scale=1, size=(self.rollout_batch_size, 1))
+            neg_prob = np.exp(self.get_neg_log_prob(neg_data)).squeeze()
+            dataset[ptr: ptr + self.rollout_batch_size] = neg_data
+            prob_set[ptr: ptr + self.rollout_batch_size] = neg_prob
+            ptr += self.rollout_batch_size
+
+        if store_path is not None and isinstance(store_path, str):
+            os.makedirs(store_path, exist_ok=True)
+            np.save(os.path.join(store_path, 'neg_mvn_uniform.npy'), dataset)
+            np.save(os.path.join(store_path, 'neg_prob_mvn_uniform.npy'), prob_set)
+
+        return dataset, prob_set
+
+class MVNContrastiveUnifrom(MVN):
+
+    def __init__(self, rollout_batch_size = 512):
+        self.rs = np.random.RandomState()
+        super(MVNContrastiveUnifrom, self).__init__(rollout_batch_size=rollout_batch_size)
+
+    def get_neg_log_prob(self, samples):
+        return 1 / 8.
+
+    def noise_sample(self, batches = 200, seed = 0, store_path = None):
+        ptr = 0
+        dataset = np.zeros((batches * self.rollout_batch_size, 1))
+        prob_set = np.zeros((batches * self.rollout_batch_size,))
+        for i in range(batches):
+            neg_data = self.rs.uniform(low=-4., high=4, size=(self.rollout_batch_size, 1))
+            neg_prob = np.exp(self.get_neg_log_prob(neg_data)).squeeze()
+            dataset[ptr: ptr + self.rollout_batch_size] = neg_data
+            prob_set[ptr: ptr + self.rollout_batch_size] = neg_prob
+            ptr += self.rollout_batch_size
+
+        if store_path is not None and isinstance(store_path, str):
+            os.makedirs(store_path, exist_ok=True)
+            np.save(os.path.join(store_path, 'neg_tran_normal.npy'), dataset)
+            np.save(os.path.join(store_path, 'neg_prob_normal.npy'), prob_set)
 
         return dataset, prob_set

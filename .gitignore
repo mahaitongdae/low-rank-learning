@@ -5,6 +5,7 @@
 !.vscode/launch.json
 !.vscode/extensions.json
 !.vscode/*.code-snippets
+.idea/*
 
 # Local History for Visual Studio Code
 .history/
@@ -255,4 +256,8 @@ cython_debug/
 
 log/
 /data/
-/datasets/
+/dataset/
+**/datasets/**
+/nbs/data/**
+**.ipynb
+

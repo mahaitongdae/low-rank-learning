@@ -75,8 +75,8 @@ class Critic(nn.Module):
 
 class RLNetwork(nn.Module):
     """
-    An abstract class for neural networks in reinforcement learning (RL). In deep RL, many algorithms
-    use DP algorithms. For example, DQN uses two neural networks: a main neural network and a target neural network.
+    An abstract class for neural networks.py in reinforcement learning (RL). In deep RL, many algorithms
+    use DP algorithms. For example, DQN uses two neural networks.py: a main neural network and a target neural network.
     Parameters of a main neural network is periodically copied to a target neural network. This RLNetwork has a
     method called soft_update that implements this copying.
     """

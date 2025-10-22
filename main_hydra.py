@@ -1,5 +1,5 @@
 from envs.noisy_pendulum import ParallelNoisyPendulum
-from envs.mvn import MVN, MVNUniform
+from envs.mvn import *
 from utils import TransitionDataset, LabeledTransitionDataset
 import torch
 from torch.utils.data import DataLoader
@@ -30,9 +30,9 @@ def run(args):
     # alg_dir = os.path.join(log_dir, f'{args.dynamics}/{args.estimator}')
     # exp_dir = os.path.join(alg_dir, f'{datetime.now().strftime("%Y-%m-%d-%H-%M-%S")}')
     # os.makedirs(exp_dir, exist_ok=True)
-    exp_dir = Path(HydraConfig.get().run.dir)
-    summary_writer = SummaryWriter(str(exp_dir))
-    log_git_details(log_file=exp_dir / 'git.diff')
+    # exp_dir = Path(HydraConfig.get().run.dir)
+    summary_writer = SummaryWriter(os.getcwd())
+    log_git_details(log_file='git.diff')
 
     ### set env and collect data
 
@@ -44,9 +44,19 @@ def run(args):
             prob=args.prob_labels,
             **vars(args))
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets', dist=args.sample)
-    elif args.dynamics == 'mvn':
-        data_generator = MVN(rollout_batch_size=args.train_batch_size, )
+    elif args.dynamics == 'mvn_contrastive_normal':
+        data_generator = MVNContrasiveNormal(rollout_batch_size=args.train_batch_size, )
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets')
+        neg_dataset, neg_prob = data_generator.noise_sample(batches=args.train_batches, store_path='./datasets')
+    elif args.dynamics == 'mvn_uniform_contrastive_normal':
+        data_generator = MVNUniformContrastiveNormal(rollout_batch_size=args.train_batch_size, )
+        dataset, prob = data_generator.sample(batches=args.train_batches, store_path='/home/haitong/PycharmProjects/low_rank_learning/datasets')
+        neg_dataset, neg_prob = data_generator.noise_sample(batches=args.train_batches, store_path='/home/haitong/PycharmProjects/low_rank_learning/datasets')
+    elif args.dynamics == 'mvn_contrastive_unifrom':
+        data_generator = MVNContrastiveUnifrom(rollout_batch_size=args.train_batch_size, )
+        dataset, prob = data_generator.sample(batches=args.train_batches, store_path='/home/haitong/PycharmProjects/low_rank_learning/datasets')
+        neg_dataset, neg_prob = data_generator.noise_sample(batches=args.train_batches, store_path='/home/haitong/PycharmProjects/low_rank_learning/datasets')
+
     elif args.dynamics == 'mvn_uniform':
         data_generator = MVNUniform(rollout_batch_size=args.train_batch_size, )
         dataset, prob = data_generator.sample(batches=args.train_batches, store_path='./datasets')
@@ -57,11 +67,17 @@ def run(args):
     # else:
     dataset = LabeledTransitionDataset(data=dataset, prob=prob, device=torch.device(args.device))
 
+
     ### initial training
 
     train_dataloader = DataLoader(dataset, batch_size=args.train_batch_size, shuffle=True)
-    # len(train_dataloader)
+    if 'contrastive' in args.dynamics:
+        neg_dataset = LabeledTransitionDataset(data=neg_dataset, prob=neg_prob, device=torch.device(args.device))
+        neg_dataloader = DataLoader(neg_dataset, batch_size=args.train_batch_size, shuffle=True)
     epoch = 10
+    OmegaConf.set_struct(args.estimator, False)
+    args.estimator['dynamics'] = args.dynamics
+    args.estimator['device'] = args.device
     if args.estimator.name == 'mle':
         estimator = MLEEstimator(embedding_dim=args.feature_dim,
                                  state_dim=data_generator.state_dim,
@@ -73,9 +89,6 @@ def run(args):
                           'uniform_scale': [1.0, 1.0, 8.0]}
         else:
             raise NotImplementedError
-        OmegaConf.set_struct(args.estimator, False)
-        args.estimator['dynamics'] = args.dynamics
-        args.estimator['device'] = args.device
         estimator = NCEEstimator(embedding_dim=args.feature_dim,
                                  state_dim=data_generator.state_dim,
                                  action_dim=data_generator.action_dim,
@@ -94,7 +107,9 @@ def run(args):
     else:
         raise NotImplementedError
 
-    pbar = tqdm(train_dataloader, desc='Epoch')
+    dataloader = zip(train_dataloader, neg_dataloader) if 'contrastive' in args.dynamics else train_dataloader
+
+    pbar = tqdm(dataloader, desc='Epoch')
     for batch, transition in enumerate(pbar):
         info = estimator.estimate(transition)
         for key, value in info.items():
@@ -106,7 +121,7 @@ def run(args):
         # print(f"Epoch {batch + 1}, loss {info.get('est_loss')}")
         pbar.set_postfix(loss=info.get('est_loss'))
 
-    estimator.save(exp_dir)
+    estimator.save(os.getcwd())
 
     # save dicts
     # args_dict = vars(args)

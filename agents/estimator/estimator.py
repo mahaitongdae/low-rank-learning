@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from utils import MLP, LearnableRandomFeature, NormalizedMLP
+from networks.networks import MLP, NormalizedMLP, LearnableRandomFeature, randMu2
 EPS = 1e-6
 from scipy.stats import norm
 import os
@@ -55,30 +55,36 @@ class DensityEstimator(object):
                         transition[:, self.state_dim + self.action_dim:])
         # phi_sa = 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
         # mu_stp1 = 1 / (self.embedding_dim ** 0.5) * self.mu(s_tp1)
-        phi_sa = 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
-        mu_stp1 = 1 / (self.embedding_dim ** 0.5) * self.mu(s_tp1)
+        phi_sa = self.get_phi(st_at)
+        mu_stp1 = self.get_mu(s_tp1)
         prob = torch.sum(phi_sa * mu_stp1, dim=-1)
 
         return torch.clamp(prob, min=1e-6) # clamping for numerical stability
         # return prob
 
-    def get_conditional_prob_via_approx_normalization(self, transition):
-        prob = self.get_prob(transition)
-        if self.kwargs.get('dynamics') == 'mvn':  # only has this for mvn.
-            st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
-                            transition[:, self.state_dim + self.action_dim:])
-            phi_sa = 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
-            grid = np.linspace(-3, 3, 6 * 100)
-            grid_tensor = torch.from_numpy(grid).reshape(-1, 1).float().to(self.device)
-            mu_stp1_grid = 1 / (self.embedding_dim ** 0.5) * self.mu(grid_tensor)
-            normalization_mu = torch.sum(mu_stp1_grid, dim=0) / 100
-            def inner_prod(phi):
-                return torch.inner(phi, normalization_mu)
+    def get_phi(self, st_at):
+        return 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
 
-            normalization = vmap(inner_prod)(phi_sa)
-            return torch.div(prob, normalization)
-        else:
-            raise NotImplementedError
+    def get_mu(self, stp1):
+        return 1 / (self.embedding_dim ** 0.5) * self.mu(stp1)
+
+    # def get_conditional_prob_via_approx_normalization(self, transition):
+    #     prob = self.get_prob(transition)
+    #     if self.kwargs.get('dynamics') == 'mvn':  # only has this for mvn.
+    #         st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
+    #                         transition[:, self.state_dim + self.action_dim:])
+    #         phi_sa = 1 / (self.embedding_dim ** 0.5) * self.phi(st_at)
+    #         grid = np.linspace(-3, 3, 6 * 100)
+    #         grid_tensor = torch.from_numpy(grid).reshape(-1, 1).float().to(self.device)
+    #         mu_stp1_grid = 1 / (self.embedding_dim ** 0.5) * self.mu(grid_tensor)
+    #         normalization_mu = torch.sum(mu_stp1_grid, dim=0) / 100
+    #         def inner_prod(phi):
+    #             return torch.inner(phi, normalization_mu)
+    #
+    #         normalization = vmap(inner_prod)(phi_sa)
+    #         return torch.div(prob, normalization)
+    #     else:
+    #         raise NotImplementedError
 
     def get_conditional_prob(self, transition):
         """
@@ -284,16 +290,16 @@ class NCEEstimator(DensityEstimator):
         #     self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0., 0., 0., 0., 0.]).to(self.device),
         #                                                         scale=torch.tensor([1.0, 2.0, 1.0, 1.0, 2.0,]).to(self.device))
         # elif kwargs.get('prob_labels', 'conditional') == 'conditional':
-        if kwargs.get('dynamics') == 'noisy_pendulum':
-            self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0., 0.]).to(self.device),
-                                                                scale=torch.tensor([1.0, 2.0]).to(self.device))
-        elif kwargs.get('dynamics') == 'mvn':
-            self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0.], device=self.device),
-                                                                scale=torch.tensor([1.0], device=self.device))
-            # self.noise_dist = torch.distributions.uniform.Uniform(low=torch.tensor([-4.], device=self.device),
-            #                                                       high=torch.tensor([4.], device=self.device))
-        else:
-            raise NotImplementedError
+        # if kwargs.get('dynamics') == 'noisy_pendulum':
+        #     self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0., 0.]).to(self.device),
+        #                                                         scale=torch.tensor([1.0, 2.0]).to(self.device))
+        # elif kwargs.get('dynamics') == 'mvn':
+        #     self.noise_dist = torch.distributions.normal.Normal(loc=torch.tensor([0.], device=self.device),
+        #                                                         scale=torch.tensor([1.0], device=self.device))
+        #     # self.noise_dist = torch.distributions.uniform.Uniform(low=torch.tensor([-4.], device=self.device),
+        #     #                                                       high=torch.tensor([4.], device=self.device))
+        # else:
+        #     raise NotImplementedError
         # else:
         #     raise NotImplementedError('noise dist for NCE not implemented')
 
@@ -308,7 +314,10 @@ class NCEEstimator(DensityEstimator):
 
     def estimate(self, batch):
 
-        transition, labels = batch
+        pos, neg = batch
+
+        transition, labels = pos
+        neg_tran, neg_labels = neg
 
         info = {}
         st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
@@ -321,7 +330,7 @@ class NCEEstimator(DensityEstimator):
         elif self.kwargs.get('nce_loss') == 'self_contrastive':
             nce_loss = self._self_contrastive_loss(st_at, s_tp1)
         elif self.kwargs.get('nce_loss') == 'spectral':
-            nce_loss = self._spectralDecompsitionLoss(transition)
+            nce_loss = self._spectralDecompsitionLoss(transition, neg_tran)
         else:
             raise NotImplementedError('NCE loss not implemented')
         info.update({'est_loss': nce_loss.item()})
@@ -332,7 +341,7 @@ class NCEEstimator(DensityEstimator):
         loss = nce_loss + reg_norm_loss
         info.update({'reg_norm_loss': reg_norm_loss.item()})
 
-        condi_prob = self.get_conditional_prob_via_approx_normalization(transition)
+        condi_prob = self.get_conditional_prob_via_approx_normalization(transition, neg_labels)
         mse_loss = self.mse_loss_fn(condi_prob, labels)
         info.update({'mse_loss': mse_loss.item(),
                      'dist_predicted_condi': condi_prob.detach().cpu().numpy(),
@@ -347,12 +356,12 @@ class NCEEstimator(DensityEstimator):
 
         return info
 
-    def get_conditional_prob_via_approx_normalization(self, transition):
+    def get_conditional_prob_via_approx_normalization(self, transition, noise_prob):
         prob = self.get_prob(transition)
-        if self.kwargs.get('dynamics') == 'mvn' and self.kwargs.get('nce_loss') == 'spectral':  # only has this for mvn.
+        if "contrastive" in self.kwargs.get('dynamics') and self.kwargs.get('nce_loss') == 'spectral':  # only has this for mvn.
             st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
                             transition[:, self.state_dim + self.action_dim:])
-            noise_prob = torch.exp(self.noise_dist.log_prob(s_tp1))
+            # noise_prob = torch.exp(self.noise_dist.log_prob(s_tp1))
             prob = prob * noise_prob # P(s'|s, a) / pn(s')
             return prob
         else:
@@ -383,10 +392,11 @@ class NCEEstimator(DensityEstimator):
         loss = loss_fn(logits, labels)
         return loss
 
-    def _spectralDecompsitionLoss(self, inputs):
+    def _spectralDecompsitionLoss(self, inputs, neg_inputs):
         st_at, s_tp1 = (inputs[:, :self.state_dim + self.action_dim],
                         inputs[:, self.state_dim + self.action_dim:])
-        noise = self.noise_dist.sample([len(inputs)])  # only numbers of samples in the batch
+        # noise = self.noise_dist.sample([len(inputs)])  # only numbers of samples in the batch
+        noise = neg_inputs
         noised_transition = torch.hstack((st_at, noise))
 
         pos_prob = self.get_prob(inputs)
@@ -440,25 +450,33 @@ class NCEEstimator(DensityEstimator):
         model_loss = model_loss(contrastive, labels)
         return model_loss
 
-class SupervisedEstimator(DensityEstimator):
+
+
+
+class RandomSVDEstimator(DensityEstimator):
 
     def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
-        super().__init__(embedding_dim, state_dim, action_dim, **kwargs)
+        super(RandomSVDEstimator, self).__init__(embedding_dim, state_dim, action_dim, **kwargs)
+        self.rand_mu = randMu2(state_dim, embedding_dim, 512, )
+
+    def get_mu(self, stp1):
+        with torch.no_grad():
+            rand_mu = self.rand_mu(stp1)
+
 
 
     def estimate(self, batch):
-
         transition, labels = batch
-        # st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
-        #                 transition[:, self.state_dim + self.action_dim:])
-        prob = self.get_prob(transition)
-        loss_fn = torch.nn.MSELoss()
-        loss = loss_fn(prob, labels)
+        prob = self.get_prob(transition) # inner product
+        st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
+                        transition[:, self.state_dim + self.action_dim:])
+        norm = torch.sum(self.get_phi(st_at) ** 2, dim=1)
+        loss = torch.mean(- 2 * prob + norm)
+
+        # loss_fn = torch.nn.MSELoss()
+        # loss = loss_fn(prob, labels)
         self.phi_optimizer.zero_grad()
-        self.mu_optimizer.zero_grad()
         loss.backward()
-        self.phi_optimizer.step()
-        self.mu_optimizer.step()
 
         info = {'est_loss': loss.item(),
                 'dist_predicted': prob.detach().cpu().numpy(),
@@ -467,109 +485,4 @@ class SupervisedEstimator(DensityEstimator):
                 }
 
         return info
-
-class SupervisedLearnableRandomFeatureEstimator(object):
-
-    def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
-        self.device = torch.device(kwargs.get('device'))
-        self.rf = LearnableRandomFeature(input_dim=state_dim,
-                                         output_dim=embedding_dim,
-                                         hidden_dim=kwargs.get('hidden_dim', 256),
-                                         hidden_depth=kwargs.get('hidden_depth', 2),
-                                         batch_size=kwargs.get('train_batch_size', 512),
-                                         sigma=kwargs.get('sigma', 1.),
-                                         learnable_w=kwargs.get('learnable_w', True),
-                                         device=self.device
-                                         )
-        nets = MLP if kwargs.get('layer_normalization', False) else NormalizedMLP
-        self.f = nets(input_dim=state_dim + action_dim,
-                     output_dim=state_dim,
-                     hidden_dim=kwargs.get('hidden_dim', 256),
-                     hidden_depth=kwargs.get('hidden_depth', 2),
-                     ).to(self.device)
-
-
-        self.rf_optimizer = torch.optim.Adam(params=self.rf.parameters(),
-                                              lr=kwargs.get('lr', 1e-3),
-                                              betas=(0.9, 0.999))
-        self.f_optimizer = torch.optim.Adam(params=self.f.parameters(),
-                                             lr=kwargs.get('lr', 1e-3),
-                                             betas=(0.9, 0.999))
-        self.kwargs = kwargs
-
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-
-    def get_noise_with_model(self, transition):
-        """
-        Only for verification.
-
-        Parameters
-        ----------
-        transition
-
-        Returns
-        -------
-
-        """
-
-        st, at, s_tp1 = (transition[:, :self.state_dim],
-                         transition[:, self.state_dim:self.state_dim + self.action_dim],
-                         transition[:, self.state_dim + self.action_dim:])
-        th = st[:, 0]
-        thdot = st[:, 1]
-        max_speed = 8
-        max_torque = 2.0
-        dt = 0.05
-        g = 10.0
-        m = 1.0
-        l = 1.0
-        theta_ddot = 3 * g / (2 * l) * torch.sin(th) + 3.0 / (m * l ** 2) * at.squeeze()
-        new_th = th + dt * thdot
-        new_thdot = thdot + dt * theta_ddot
-        # new_th = ((new_th + np.pi) % (2 * np.pi)) - np.pi
-        new_thdot = torch.clamp(new_thdot, -max_speed, max_speed)
-        f_sa = torch.vstack([new_th, new_thdot]).T
-        noise = s_tp1 - f_sa
-        return noise
-
-
-    def get_prob(self, transition):
-        st_at, s_tp1 = (transition[:, :self.state_dim + self.action_dim],
-                        transition[:, self.state_dim + self.action_dim:])
-        fsa = self.f(st_at)
-        phi_fsa = self.rf(fsa)
-        phi_stp1 = self.rf(s_tp1)
-
-        prob = 16 * torch.mean(phi_fsa * phi_stp1, dim=-1)
-        return prob
-
-    def estimate(self, batch):
-        transition, labels = batch
-        prob = self.get_prob(transition)
-        loss_fn = torch.nn.MSELoss()
-        loss = loss_fn(prob, labels)
-        self.rf_optimizer.zero_grad()
-        self.f_optimizer.zero_grad()
-        loss.backward()
-        self.rf_optimizer.step()
-        self.f_optimizer.step()
-
-        info = {'est_loss': loss.item(),
-                'dist_predicted': prob.detach().cpu().numpy(),
-                'dist_true': labels.detach().cpu().numpy(),
-                'dist_error': (prob-labels).detach().cpu().numpy()
-                }
-
-        return info
-
-    def save(self, exp_dir):
-        # else:
-        torch.save(self.rf.state_dict(), os.path.join(exp_dir, 'rf.pth'))
-        torch.save(self.f.state_dict(), os.path.join(exp_dir, 'f.pth'))
-
-    def load(self, exp_dir):
-        self.rf.load_state_dict(torch.load(os.path.join(exp_dir, 'rf.pth')))
-        self.f.load_state_dict(torch.load(os.path.join(exp_dir, 'f.pth')))
-
 
