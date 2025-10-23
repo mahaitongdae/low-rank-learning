@@ -33,10 +33,10 @@ def orthogonal_regularization(model, device, reg=1e-4):
                 orth_loss += torch.sum(torch.square(sym * (1 - torch.eye(sym.shape[0]).to(device))))
     return reg * orth_loss
 
-class ValuDICEImitator(torch.nn.Module):
+class ValueDICEImitator(torch.nn.Module):
 
     def __init__(self, state_dim, action_dim, **kwargs):
-        super(ValuDICEImitator, self).__init__()
+        super(ValueDICEImitator, self).__init__()
         nu_lr = kwargs.get('nu_lr', 1e-3)
         policy_lr = kwargs.get('policy_lr', 1e-5)
         hidden_dim = kwargs.get('hidden_dim', 256)
@@ -201,7 +201,7 @@ class ValuDICEImitator(torch.nn.Module):
                 }
 
 
-class ReprValueDICEImitator(ValuDICEImitator):
+class ReprValueDICEImitator(ValueDICEImitator):
     def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
         super().__init__(state_dim, action_dim, **kwargs)
         hidden_dim = kwargs.get('hidden_dim', 256)
@@ -319,6 +319,7 @@ class ReprValueDICEImitator(ValuDICEImitator):
                               torch.tensor(1, device=self.device))
         assert action.ndim == 2 and action.shape [0] == 1
         return to_np(action[0])
+
 
     def get_nu(self, sa):
         with torch.no_grad():
