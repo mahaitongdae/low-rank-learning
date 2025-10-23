@@ -41,6 +41,9 @@ class SupervisedEstimator(DensityEstimator):
         return info
 
 class SupervisedLearnableRandomFeatureEstimator(object):
+    """
+    
+    """
 
     def __init__(self, embedding_dim, state_dim, action_dim, **kwargs):
         self.device = torch.device(kwargs.get('device'))

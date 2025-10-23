@@ -1,9 +1,11 @@
 device: cuda
-dynamics: mvn_contrastive_unifrom
+dynamics: minari_halfcheetah_simple-v0
 dataset_name: mujoco/halfcheetah/simple-v0
-train_batch_size: 2 # actually times 1000
-train_batches: 2000
-lr: 0.001
+train_batch_size: 1
+train_batches_per_epoch: 2048
+train_epochs: 10
+lr: 0.0003
+sigma: 4.0
 seed: 0
 suffix: default
 
@@ -14,8 +16,11 @@ hidden_dim: 512
 
 
 defaults:
+ - _self_
  - estimator: random_feature
 
 hydra:
   run:
     dir: ./log/${dynamics}/${estimator.name}/${now:%Y-%m-%d_%H-%M-%S}_s${seed}_${suffix} # wlayer${estimator.w_hidden_activation}_
+  job:
+    chdir: true
