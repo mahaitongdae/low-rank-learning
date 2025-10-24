@@ -12,6 +12,7 @@ import torch
 import yaml
 
 from agents.estimator.random_feature import LearnableFRandomFeatureEstimator
+from agents.estimator.random_feature import RandomFeatureQNet
 from datetime import datetime
 from exp_logger.log_git import log_git_details
 from functools import partial
@@ -61,13 +62,21 @@ def run(args):
             action_dim=action_dim,
             mc_dim=args.feature_dim,
             device=args.device)
+        qnet = RandomFeatureQNet(state_dim=state_dim,
+                                 action_dim=action_dim,
+                                 hidden_dim=args.hidden_dim,
+                                 hidden_depth=args.hidden_depth,
+                                 mc_dim=args.feature_dim,
+                                 device=args.device)
     else:
         raise NotImplementedError
 
     # dataloader = zip(
     #     train_dataloader,
     #     neg_dataloader) if 'contrastive' in args.dynamics else train_dataloader
-
+    if task == 'train_qnet_only':
+        assert args.pretrained_representation_path is not None
+        qnet.load_pretrained_reprsentation(args.pretrained_representation_path)
     global_step = 0
     max_batches = getattr(args, 'train_batches_per_epoch', None)
     for epoch in range(args.train_epochs):
@@ -82,7 +91,13 @@ def run(args):
                                                    1).float().to(args.device)
             s_tp1 = transition['next_observations'].reshape(
                 -1, state_dim).float().to(args.device)
-            info = estimator.train(state, action, reward, s_tp1)
+            # Train the estimator
+            if args.task == 'train_estimator_only':
+                info = estimator.train(state, action, reward, s_tp1)
+            elif args.task == 'train_qnet_only':
+                info = qnet.train(state, action, reward, s_tp1)
+            else:
+                raise NotImplementedError
             global_step += 1
             for key, value in info.items():
                 if 'dist' in key:

@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from agents.estimator.estimator import DensityEstimator
 from networks.networks import MLP, NormalizedMLP, LearnableRandomFeature, randMu2
+from agents.estimator.estimation_loss import td_n_loss
 import numpy as np
 EPS = 1e-6
 
@@ -213,9 +214,103 @@ class LearnableFRandomFeatureEstimator(nn.Module):
         self.load_state_dict(torch.load(os.path.join(path, 'estimator.pth')))
 
 
+class RandomFeatureQNet(nn.Module):
 
+    def __init__(self, state_dim, action_dim, hidden_dim, hidden_depth, mc_dim,
+                 device):
+        super().__init__()
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.hidden_dim = hidden_dim
+        self.hidden_depth = hidden_depth
+        self.mc_dim = mc_dim
+        self.device = device
+        # Feature extractor over concatenated [state, action]
+        self.rf = LearnableRandomFeature(input_dim=state_dim + action_dim,
+                                         output_dim=mc_dim,
+                                         hidden_dim=hidden_dim,
+                                         hidden_depth=hidden_depth,
+                                         batch_size=mc_dim,
+                                         sigma=1.,
+                                         learnable_w=True,
+                                         device=device)
+        # Linear head from random features to scalar Q
+        self.q_head = nn.Linear(mc_dim, 1)
+        self.apply(weight_init)
+        self.to(device)
+        self.optimizer = torch.optim.Adam(
+            list(self.rf.parameters()) + list(self.q_head.parameters()), lr=1e-3)
 
+    def forward(self, state, action):
+        """
+        Compute Q(s, a) for batch inputs.
+        state: [B, state_dim]
+        action: [B, action_dim]
+        returns: [B, 1]
+        """
+        x = torch.cat([state, action], dim=-1)
+        phi = self.rf(x)
+        q = self.q_head(phi)
+        return q
 
+    def forward_time_major(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """
+        Compute Q(s_t, a_t) for time-major inputs.
+        states: [T, B, state_dim]
+        actions: [T, B, action_dim]
+        returns: [T, B, 1]
+        """
+        T, B, _ = states.shape
+        x = torch.cat([states, actions], dim=-1).reshape(T * B, -1)
+        phi = self.rf(x)
+        q = self.q_head(phi).reshape(T, B, 1)
+        return q
+
+    def load_pretrained_reprsentation(self, path: str):
+        """
+        Load pretrained random feature parameters if available at path/rf.pth
+        """
+        rf_path = os.path.join(path, 'rf.pth')
+        if os.path.exists(rf_path):
+            self.rf.load_state_dict(torch.load(rf_path, map_location=self.device))
+
+    def train(self, state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor, s_tp1: torch.Tensor) -> dict:
+        """
+        Legacy single-step regression on immediate reward (kept for compatibility).
+        """
+        q = self.forward(state, action)
+        loss = torch.nn.MSELoss()(q, reward)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        return {'qnet_loss': loss.item()}
+
+    def train_td_n(self,
+                   states: torch.Tensor,
+                   actions: torch.Tensor,
+                   rewards: torch.Tensor,
+                   dones: torch.Tensor,
+                   gamma: float,
+                   n: int,
+                   mask: torch.Tensor | None = None,
+                   reduction: str = 'mean') -> dict:
+        """
+        Train Q-network with TD-n loss on time-major inputs.
+        - states, actions, rewards, dones: [T, B, ...] with rewards/dones shaped [T, B, 1]
+        Returns logging dict.
+        """
+        q_values = self.forward_time_major(states, actions)  # [T, B, 1]
+        loss, info = td_n_loss(q_values=q_values,
+                               rewards=rewards,
+                               dones=dones,
+                               gamma=gamma,
+                               n=n,
+                               mask=mask,
+                               reduction=reduction)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        return info
 
 def weight_init(m):
     """Custom weight init for Conv2D and Linear layers."""
