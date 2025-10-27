@@ -2,11 +2,42 @@ import torch
 import torch.nn.functional as F
 
 
+def get_targets(q_t, r_t, done_t, discount_t, n, lambda_t):
+    """
+    Compute the strided n-step bootstrap return targets over a sequence. An analogy of rlax.n_step_bootstrap_return.
+    
+        G_t = r_t + discount_t * (lambda_t * G_{t+1} + (1 - lambda_t) * q_t)
+        
+    """
+    T = q_t.shape[0]
+    device = q_t.device
+    # discounts per step: gamma * (1 - done)
+    discounts = discount_t * (1.0 - done_t)
+
+    # Right pad time with n zeros so slicing k:k+T works for k in [0, n]
+    pad_size = min(n - 1, T)  
+    # if T < n - 1, q_values[n - 1:] is [], all the targets are padded with the last value of q_values
+    targets = torch.cat([q_t[n - 1:], torch.tile(q_t[-1], [pad_size])])
+    # If 
+    rewards_pad = torch.cat([r_t, torch.zeros(n - 1, device=device)])
+    discounts_pad = torch.cat([discounts, torch.ones(n - 1, device=device)])
+    values_pad = torch.cat([q_t, torch.tile(q_t[-1], [n - 1])])
+
+    # Backward accumulate n rewards: r_{t+k} + discount_{t+k} * (...)
+    for k in range(n - 1, -1, -1):
+        r_slice = rewards_pad[k:k + T]
+        disc_slice = discounts_pad[k:k + T]
+        values_slice = values_pad[k:k + T]
+        targets = r_slice + disc_slice * (lambda_t * targets + (1 - lambda_t) * values_slice)
+    return targets
+
+
 def td_n_loss(q_values: torch.Tensor,
               rewards: torch.Tensor,
               dones: torch.Tensor,
               gamma: float,
               n: int,
+              lambda_: float = 1.0,
               mask: torch.Tensor | None = None,
               reduction: str = 'mean') -> tuple[torch.Tensor, dict]:
     """
@@ -25,6 +56,8 @@ def td_n_loss(q_values: torch.Tensor,
         Discount factor.
     n : int
         N-step horizon.
+    lambda_ : float
+        Lambda parameter for the lambda-return.
     mask : torch.Tensor | None
         Optional validity mask of shape [T, B, 1], 1 for valid steps, 0 for padded.
         If None, all steps are treated as valid.
@@ -38,11 +71,16 @@ def td_n_loss(q_values: torch.Tensor,
     info : dict
         Diagnostic scalars.
     """
-    assert q_values.dim() == rewards.dim() == dones.dim(
-    ) == 2, "Expect [T, B,] tensors"
+    if q_values.dim() == 3:
+        q_values = q_values.squeeze(-1)
+    if rewards.dim() == 3:
+        rewards = rewards.squeeze(-1)
+    if dones.dim() == 3:
+        dones = dones.squeeze(-1)
+    assert q_values.dim() == rewards.dim() == dones.dim() == 2, "Expect [T, B] tensors"
     assert q_values.shape == rewards.shape == dones.shape, "Shape mismatch among q_values, rewards, dones"
-    T, B = q_values.shape
     device = q_values.device
+    gamma = gamma * torch.ones_like(rewards, device=device)
 
     if mask is None:
         mask = torch.ones_like(rewards, device=device)
@@ -52,30 +90,17 @@ def td_n_loss(q_values: torch.Tensor,
     # User-requested implementation:
     # 1) Pad rewards, values, discounts, dones with n values (right-pad on time)
     # 2) Compute TD-n targets via a clean backward horizon loop
-
-    def get_targets(q_values, rewards, dones, gamma, n):
-        # discounts per step: gamma * (1 - done)
-        discounts = gamma * (1.0 - dones)
-
-        # Right pad time with n zeros so slicing k:k+T works for k in [0, n]
-        pad_size = min(n - 1, T)
-        targets = torch.cat([q_values[-pad_size:], rewards], dim=0)
-
-        # Start from bootstrap term q_{t+n}
-        targets = q_pad[n:n + T].clone()
-        # Backward accumulate n rewards: r_{t+k} + discount_{t+k} * (...)
-        for k in range(n - 1, -1, -1):
-            r_slice = rewards_pad[k:k + T]
-            disc_slice = discounts_pad[k:k + T]
-            targets = r_slice + disc_slice * targets
-        return targets
-    targets = torch.vmap(get_targets, in)(q_values, rewards, dones, gamma, n)
+    
+    with torch.no_grad():
+        targets = torch.vmap(get_targets, in_dims=(1, 1, 1, 1, None, None), out_dims=(1,))(
+            q_values, rewards, dones, gamma, n, lambda_)
 
     # TD error and masked loss
     td_error = q_values - targets
     if reduction == 'mean':
-        denom = mask.sum().clamp_min(1.0)
-        loss = (td_error.pow(2) * mask).sum() / denom
+        # denom = mask.sum().clamp_min(1.0)
+        # loss = (td_error.pow(2) * mask).sum() / denom
+        loss = (td_error.pow(2) * mask).mean()
     elif reduction == 'sum':
         loss = (td_error.pow(2) * mask).sum()
     else:
@@ -91,15 +116,24 @@ def td_n_loss(q_values: torch.Tensor,
 
 
 def test_td_n_loss():
-    q_values = torch.randn(10, 32, 1)
-    rewards = torch.randn(10, 32, 1)
-    dones = torch.randint(0, 2, (10, 32, 1))
-    gamma = 0.99
+    import numpy as np
+    import rlax
+    import jax
+    q_values = np.random.randn(10, 32)
+    rewards = np.random.randn(10, 32)
+    dones = np.zeros((10, 32)) 
+    gamma = 0.99 * np.ones((10, 32))
     n = 10
-    mask = torch.ones(10, 32, 1)
-    loss, info = td_n_loss(q_values, rewards, dones, gamma, n, mask)
-    print(loss)
-    print(info)
+    lambda_ = 1.0
+    mask = np.ones((10, 32))
+    target_torch = torch.vmap(get_targets, in_dims=(1, 1, 1, 1, None, None), out_dims=(1,))(torch.from_numpy(q_values), 
+                           torch.from_numpy(rewards), 
+                           torch.from_numpy(dones), 
+                           torch.from_numpy(gamma), n, lambda_)
+    # print()
+    rlax_fn = jax.vmap(rlax.n_step_bootstrapped_returns, in_axes=(1, 1, 1, None, None), out_axes=1)
+    target_jax = rlax_fn(rewards, (1 - dones) * gamma, q_values, n, lambda_)
+    print(np.allclose(target_torch.numpy(), np.array(target_jax)))
 
 if __name__ == '__main__':
     test_td_n_loss()

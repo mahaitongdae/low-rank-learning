@@ -5,6 +5,119 @@ import torch.nn.utils.rnn as rnn_utils
 from torch.utils.data import DataLoader
 import numpy as np
 from functools import partial
+from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
+
+
+class Normalizer:
+    """Applies per-dimension standardization using provided mean/std.
+
+    Works with numpy arrays and torch tensors. Broadcasts across all leading
+    dimensions and normalizes the last dimension.
+    """
+
+    def __init__(self, mean: np.ndarray, std: np.ndarray, eps: float = 1e-6):
+        mean = np.asarray(mean)
+        std = np.asarray(std)
+        self.mean = mean.astype(np.float32)
+        self.std = (std + eps).astype(np.float32)
+        self.eps = eps
+
+    def __call__(self, x):
+        if isinstance(x, torch.Tensor):
+            mean_t = torch.as_tensor(self.mean, dtype=x.dtype, device=x.device)
+            std_t = torch.as_tensor(self.std, dtype=x.dtype, device=x.device)
+            return (x - mean_t) / std_t
+        x_np = np.asarray(x)
+        return (x_np - self.mean) / self.std
+
+    def shift_scale(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Returns (shift, scale) such that (x + shift) * scale == standardized x.
+
+        Useful for env wrappers expecting shift/scale.
+        """
+        shift = -self.mean
+        scale = 1.0 / self.std
+        return shift, scale
+
+
+def _accumulate_sums(arr: np.ndarray,
+                      running_sum: np.ndarray,
+                      running_sumsq: np.ndarray,
+                      running_count: int) -> Tuple[np.ndarray, np.ndarray, int]:
+    """Accumulate sum, sumsq, and count along the first dimension."""
+    if arr.ndim == 1:
+        arr = arr[:, None]
+    running_sum += arr.sum(axis=0)
+    running_sumsq += np.square(arr, dtype=np.float64).sum(axis=0)
+    running_count += arr.shape[0]
+    return running_sum, running_sumsq, running_count
+
+
+def compute_stats_over_episodes(dataset,
+                                keys: Sequence[str] = ("observations",),
+                                num_episodes: Optional[int] = None,
+                                ) -> Dict[str, Dict[str, np.ndarray]]:
+    """Compute mean/std per-dimension over up to num_episodes for given keys.
+
+    Args:
+      dataset: A Minari dataset object (iterable of episodes with numpy fields).
+      keys: Sequence of attribute names on each episode to aggregate.
+      num_episodes: If provided, limit to the first N episodes.
+
+    Returns:
+      Dict mapping key -> { 'mean': np.ndarray, 'std': np.ndarray }.
+    """
+    # Peek first episode to infer dimensionality for each key
+    first_ep = dataset[0]
+    dims = {}
+    for k in keys:
+        v = getattr(first_ep, k)
+        dim = v.shape[-1] if v.ndim > 1 else 1
+        dims[k] = dim
+
+    sums: Dict[str, np.ndarray] = {k: np.zeros((dims[k],), dtype=np.float64) for k in keys}
+    sumsqs: Dict[str, np.ndarray] = {k: np.zeros((dims[k],), dtype=np.float64) for k in keys}
+    counts: Dict[str, int] = {k: 0 for k in keys}
+
+    total_eps = len(dataset) if num_episodes is None else min(num_episodes, len(dataset))
+    for ep_idx in range(total_eps):
+        ep = dataset[ep_idx]
+        for k in keys:
+            arr = getattr(ep, k)
+            sums[k], sumsqs[k], counts[k] = _accumulate_sums(arr, sums[k], sumsqs[k], counts[k])
+
+    stats: Dict[str, Dict[str, np.ndarray]] = {}
+    for k in keys:
+        count = max(counts[k], 1)
+        mean = (sums[k] / count).astype(np.float32)
+        var = (sumsqs[k] / count) - np.square(mean, dtype=np.float32)
+        var = np.maximum(var, 0.0)
+        std = np.sqrt(var, dtype=np.float32)
+        stats[k] = {"mean": mean, "std": std}
+    return stats
+
+
+def create_normalizers_from_stats(stats: Mapping[str, Mapping[str, np.ndarray]]) -> Dict[str, Normalizer]:
+    """Create Normalizer objects per key from stats dict produced above."""
+    normalizers: Dict[str, Normalizer] = {}
+    for k, v in stats.items():
+        normalizers[k] = Normalizer(mean=v["mean"], std=v["std"])
+    return normalizers
+
+
+def normalize_batch_dict(batch: Mapping[str, torch.Tensor],
+                         normalizers: Mapping[str, Normalizer],
+                         keys: Sequence[str] = ("observations", "next_observations")) -> Dict[str, torch.Tensor]:
+    """Apply normalizers to selected keys of a collated batch in-place-friendly.
+
+    Assumes last dimension is the feature dimension to be standardized. Works for
+    tensors of any leading rank.
+    """
+    out = dict(batch)
+    for k in keys:
+        if k in out and k in normalizers:
+            out[k] = normalizers[k](out[k])
+    return out
 
 
 def collate_fn(batch,

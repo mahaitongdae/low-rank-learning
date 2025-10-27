@@ -23,6 +23,9 @@ from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from utilities.dataset_utils import collate_fn
+from utilities.dataset_utils import compute_stats_over_episodes
+from utilities.dataset_utils import create_normalizers_from_stats
+from utilities.dataset_utils import normalize_batch_dict
 from utils import TransitionDataset, LabeledTransitionDataset
 
 # from evaluation import evaluate
@@ -54,6 +57,12 @@ def run(args):
         num_workers=4,
         pin_memory=True  # Set to True if you are training on a CUDA GPU
     )
+    
+    # normalize the data
+    stats = compute_stats_over_episodes(dataset, keys=("observations",), num_episodes=N_EPISODES)
+    normalizers = create_normalizers_from_stats(stats)
+    
+    
     if args.estimator.name == 'random_feature':
         estimator = LearnableFRandomFeatureEstimator(
             hidden_dim=args.hidden_dim,
@@ -83,6 +92,8 @@ def run(args):
         pbar = tqdm(train_dataloader,
                     desc=f'Epoch {epoch + 1}/{args.train_epochs}')
         for batch, transition in enumerate(pbar):
+            if args.normalize_data:
+                transition = normalize_batch_dict(transition, normalizers, keys=("observations", "next_observations"))
             state = transition['observations'].reshape(
                 -1, state_dim).float().to(args.device)
             action = transition['actions'].reshape(-1, action_dim).float().to(
