@@ -261,3 +261,4 @@ log/
 /nbs/data/**
 
 .vscode/
+pretrained/**

@@ -1,0 +1,39 @@
+task: train_qnet_only
+normalize_data: true
+
+device: cuda
+dynamics: minari_halfcheetah_expert
+# Either specify a single dataset_name or a list in dataset_names.
+dataset_name: mujoco/halfcheetah/expert-v0
+# Example for multiple datasets (commented out by default):
+# dataset_names:
+#   - mujoco/halfcheetah/simple-v0
+#   - mujoco/halfcheetah/medium-v0
+#   - mujoco/halfcheetah/expert-v0
+train_batch_size: 1
+train_batches_per_epoch: 2048
+train_epochs: 10
+lr: 0.0003
+logger: wandb
+sigma: 4.0
+seed: 0
+suffix: default
+
+# model
+feature_dim: 1024
+hidden_depth: 3
+hidden_dim: 512
+
+# load
+pretrained_representation_path: /home/haitong/PycharmProjects/low_rank_learning/log/minari_halfcheetah_simple-v0/random_feature/2025-10-27_20-46-46_s0_default
+
+
+defaults:
+ - _self_
+ - estimator: random_feature
+
+hydra:
+  run:
+    dir: ./log/${dynamics}/${estimator.name}_qnet/${now:%Y-%m-%d_%H-%M-%S}_s${seed}_${suffix} # wlayer${estimator.w_hidden_activation}_
+  job:
+    chdir: true

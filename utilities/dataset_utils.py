@@ -5,6 +5,82 @@ import torch.nn.utils.rnn as rnn_utils
 from torch.utils.data import DataLoader
 import numpy as np
 from functools import partial
+from typing import List
+from torch.utils.data import Sampler
+import random
+
+
+class ConcatMinariDataset:
+    """Concatenate multiple Minari datasets as a single indexable dataset.
+
+    This provides a light wrapper exposing __len__/__getitem__ so it can be
+    consumed by PyTorch DataLoader and by our batching utilities unchanged.
+    Assumes all provided datasets come from the same environment spec.
+    """
+
+    def __init__(self, datasets: List):
+        if not datasets:
+            raise ValueError("ConcatMinariDataset requires at least one dataset")
+        self.datasets: List = list(datasets)
+        # Precompute prefix sums of lengths for O(log N) indexing
+        lengths = [len(d) for d in self.datasets]
+        self._cum_lengths = np.cumsum([0] + lengths)
+
+    def __len__(self) -> int:
+        return int(self._cum_lengths[-1])
+
+    def __getitem__(self, index: int):
+        # Support negative indices
+        if index < 0:
+            index = len(self) + index
+        if index < 0 or index >= len(self):
+            raise IndexError("index out of range")
+        # Find which dataset this index falls into
+        # searchsorted over [len0, len0+len1, ...]
+        ds_idx = int(np.searchsorted(self._cum_lengths[1:], index, side='right'))
+        base = int(self._cum_lengths[ds_idx])
+        local_idx = index - base
+        return self.datasets[ds_idx][local_idx]
+
+
+class RandomInterleavedConcatSampler(Sampler):
+    """Randomly interleave indices from each sub-dataset without replacement.
+
+    Ensures samples are well-mixed across datasets in a single epoch instead of
+    consuming one dataset then the next.
+    """
+
+    def __init__(self, concat_dataset: ConcatMinariDataset, seed: int | None = None):
+        self.concat_dataset = concat_dataset
+        self._lengths = [len(d) for d in concat_dataset.datasets]
+        self._bases = list(concat_dataset._cum_lengths[:-1])
+        self._rng = random.Random(seed)
+
+    def __len__(self) -> int:
+        return sum(self._lengths)
+
+    def __iter__(self):
+        # Build per-dataset shuffled local indices
+        per_ds_indices = []
+        for n in self._lengths:
+            idxs = list(range(n))
+            self._rng.shuffle(idxs)
+            per_ds_indices.append(idxs)
+
+        # Track current positions
+        positions = [0] * len(self._lengths)
+        active = [i for i, n in enumerate(self._lengths) if n > 0]
+
+        while active:
+            # Pick a dataset uniformly at random among those with remaining items
+            ds_idx = self._rng.choice(active)
+            pos = positions[ds_idx]
+            local_idx = per_ds_indices[ds_idx][pos]
+            positions[ds_idx] += 1
+            if positions[ds_idx] >= self._lengths[ds_idx]:
+                # Remove exhausted dataset
+                active.remove(ds_idx)
+            yield self._bases[ds_idx] + local_idx
 from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 
@@ -124,8 +200,7 @@ def collate_fn(batch,
                shuffle_trajectories=False,
                trajectory_length=10,
                stride=1,
-               batch_size=32):
-
+               batch_size: int | str = 'auto'):
     T = trajectory_length
     S = stride
     B = batch_size
@@ -141,51 +216,76 @@ def collate_fn(batch,
         x = x.unfold(dimension=0, size=T, step=S)
         x = x.permute(0, 2, 1)  # (num_windows, T, dim)
         num_windows = x.shape[0]
-        num_batches = num_windows // B
-        N_usable = num_batches * B
+        if shuffle_trajectories:
+            x = x[torch.randperm(num_windows)]
+        x = x.permute(1, 0, 2)  # (T, B, dim)
+        if isinstance(batch_size, int) and batch_size < num_windows:
+            return x[:, :batch_size, :]
+        else:
+            return x
 
-        x = x[:N_usable]
-        x = x.view(num_batches, B, T, data_dim)
-        x = x.permute(0, 2, 1, 3)
-        return x
 
     return {
         "id":
         torch.Tensor([x.id for x in batch]),
         "observations":
-        torch.nn.utils.rnn.pad_sequence(
-            [map_fn(x.observations[:-1]) for x in batch], batch_first=True),
+        # torch.nn.utils.rnn.pad_sequence(
+        #     [map_fn(x.observations[:-1]) for x in batch], batch_first=True),
+        map_fn(batch[0].observations[:-1]
+               ),  # [0] since we only have one Episode in the batch
         "actions":
-        torch.nn.utils.rnn.pad_sequence([map_fn(x.actions) for x in batch],
-                                        batch_first=True),
+        # torch.nn.utils.rnn.pad_sequence([map_fn(x.actions) for x in batch],
+        #                                 batch_first=True),
+        map_fn(batch[0].actions),
         "next_observations":
-        torch.nn.utils.rnn.pad_sequence(
-            [map_fn(x.observations[1:]) for x in batch], batch_first=True),
+        # torch.nn.utils.rnn.pad_sequence(
+        #     [map_fn(x.observations[1:]) for x in batch], batch_first=True),
+        map_fn(batch[0].observations[1:]),
         "rewards":
-        torch.nn.utils.rnn.pad_sequence([map_fn(x.rewards) for x in batch],
-                                        batch_first=True),
+        # torch.nn.utils.rnn.pad_sequence([map_fn(x.rewards) for x in batch],
+        #                                 batch_first=True),
+        map_fn(batch[0].rewards),
+        # map_fn(batch[0].rewards),
         "terminations":
-        torch.nn.utils.rnn.pad_sequence(
-            [map_fn(x.terminations) for x in batch], batch_first=True),
+        # torch.nn.utils.rnn.pad_sequence(
+        #     [map_fn(x.terminations) for x in batch], batch_first=True),
+        map_fn(batch[0].terminations),
+        # map_fn(batch[0].terminations),
         "truncations":
-        torch.nn.utils.rnn.pad_sequence([map_fn(x.truncations) for x in batch],
-                                        batch_first=True)
+        # torch.nn.utils.rnn.pad_sequence([map_fn(x.truncations) for x in batch],
+        #                                 batch_first=True),
+        map_fn(batch[0].truncations),
+        # map_fn(batch[0].truncations),
     }
 
 
 def test_get_dataset():
     dataset = minari.load_dataset('mujoco/halfcheetah/simple-v0',
                                   download=True)
+    dataset_medium = minari.load_dataset('mujoco/halfcheetah/medium-v0',
+                                         download=True)
+    dataset_expert = minari.load_dataset('mujoco/halfcheetah/expert-v0',
+                                         download=True)
+    dataset_list = [dataset, dataset_medium, dataset_expert]
+    dataset = ConcatMinariDataset(dataset_list)
+    print(len(dataset))
+    sampler = RandomInterleavedConcatSampler(dataset, seed=0)
     dataloader = DataLoader(
         dataset,
         batch_size=1,
-        shuffle=True,
-        collate_fn=partial(collate_fn, shuffle_trajectories=False),
+        shuffle=False,
+        sampler=sampler,
+        collate_fn=partial(collate_fn, shuffle_trajectories=False, trajectory_length=10, stride=5),
         num_workers=4,
-        pin_memory=True  # Set to True if you are training on a CUDA GPU
+        pin_memory=True
     )
 
     print(next(iter(dataloader))['observations'].shape)
+    print(next(iter(dataloader))['next_observations'].shape)
+    print(next(iter(dataloader))['actions'].shape)
+    print(next(iter(dataloader))['rewards'].shape)
+    print(next(iter(dataloader))['terminations'].shape)
+    print(next(iter(dataloader))['truncations'].shape)
 
 if __name__ == '__main__':
     test_get_dataset()

@@ -5,7 +5,9 @@ EBM Estimator.
 
 from typing import Optional, Union
 import os
+import json
 
+import gymnasium
 import torch
 import torch.nn as nn
 from agents.estimator.estimator import DensityEstimator
@@ -43,6 +45,7 @@ class LearnableFRandomFeatureEstimator(nn.Module):
                  hidden_dim: int,
                  hidden_depth: int,
                  dt: float = 0.05,
+                 regularizer: float = 1e-3,
                  output_mod: Union[nn.Module, None] = None,
                  mc_dim: int = 1024,
                  learning_rate: float = 1e-3,
@@ -54,7 +57,7 @@ class LearnableFRandomFeatureEstimator(nn.Module):
                          requires_grad=False).to(device))  # [N, n]
         self.trunk = mlp_elu(state_dim + action_dim, hidden_dim, 2 * state_dim,
                              hidden_depth, output_mod)
-        self.reward_trunk = mlp_elu(state_dim, hidden_dim, 1, hidden_depth,
+        self.reward_trunk = mlp_elu(state_dim + action_dim, hidden_dim, 1, hidden_depth,
                                     output_mod)
         self.apply(weight_init)
         self.b = 2 * torch.pi * torch.rand(size=(mc_dim, 1)).to(device)
@@ -65,6 +68,7 @@ class LearnableFRandomFeatureEstimator(nn.Module):
         self.reward_trunk_optimizer = torch.optim.Adam(
             self.reward_trunk.parameters(), lr=learning_rate)
         self.dt = dt
+        self.regularizer = regularizer
         self.state_dim = state_dim
         self.action_dim = action_dim
 
@@ -95,8 +99,9 @@ class LearnableFRandomFeatureEstimator(nn.Module):
     def forward(self, state, action, s_tp1=None):
         delta, std = self.get_delta_and_std(state, action)
         f_sa = state + delta * self.dt
+        std_inv = 1. / std
         # Reparameterization to get w
-        w = std[:, None, :] * self.epsilon[
+        w = std_inv[:, None, :] * self.epsilon[
             None, :, :]  # [B, 1, n] * [1, N, n] = [B, N, n]
 
         def get_random_feature(x):
@@ -142,12 +147,15 @@ class LearnableFRandomFeatureEstimator(nn.Module):
         per_dim = -0.5 * (np.log(2 * np.pi) + 2.0 * torch.log(std) +
                           (diff / std)**2)
         return torch.sum(per_dim, dim=-1), {
-            'delta_mean': torch.mean(delta, dim=-1).mean(),
-            'std_mean': torch.mean(std, dim=-1).mean(),
-            'delta_std': torch.std(delta, dim=-1).mean(),
-            'std_std': torch.std(std, dim=-1).mean(),
-            'prediction_error_mean': torch.mean(diff, dim=-1).mean(),
-            'prediction_error_std': torch.std(diff, dim=-1).mean(),
+            'delta_mean': torch.mean(delta,
+                                     dim=-1).mean(),  # mean of the output
+            'std_mean': torch.mean(std, dim=-1).mean(),  # mean of the std
+            'delta_std': torch.std(delta, dim=-1).mean(),  # std of the output
+            'std_std': torch.std(std, dim=-1).mean(),  # std of the std
+            'prediction_error_mean':
+            torch.mean(diff, dim=-1).mean(),  # mean of the prediction error
+            'prediction_error_std':
+            torch.std(diff, dim=-1).mean(),  # std of the prediction error
         }
 
     def get_loss(self, state: torch.Tensor, action: torch.Tensor,
@@ -155,10 +163,28 @@ class LearnableFRandomFeatureEstimator(nn.Module):
         """
         Get the loss of the transition.
         """
-        log_likelihood, info = self.get_log_likelihood(state, action, s_tp1)
-        loss = -torch.mean(log_likelihood)
-        info.update({'est_loss': loss.item()})
-        return loss, info
+        delta, std = self.get_delta_and_std(state, action)
+        mu = state + self.dt * delta
+        diff = s_tp1 - mu
+        per_dim = -0.5 * (np.log(2 * np.pi) + 2.0 * torch.log(std) +
+                          (diff / std)**2)
+        loss = -torch.mean(per_dim)
+        regularization = self.regularizer * (torch.linalg.norm(
+            delta, dim=-1).mean() + torch.linalg.norm(std, dim=-1).mean())
+        info = {
+            'delta_mean': torch.mean(delta,
+                                     dim=-1).mean(),  # mean of the output
+            'std_mean': torch.mean(std, dim=-1).mean(),  # mean of the std
+            'delta_std': torch.std(delta, dim=-1).mean(),  # std of the output
+            'std_std': torch.std(std, dim=-1).mean(),  # std of the std
+            'prediction_error_mean':
+            torch.mean(diff, dim=-1).mean(),  # mean of the prediction error
+            'prediction_error_std':
+            torch.std(diff, dim=-1).mean(),  # std of the prediction error
+            'est_loss': loss.item(),
+            'regularization': regularization.item()
+        }
+        return loss + regularization, info
 
     def estimate(self, state: torch.Tensor, action: torch.Tensor,
                  s_tp1: torch.Tensor) -> dict:
@@ -184,7 +210,7 @@ class LearnableFRandomFeatureEstimator(nn.Module):
         """
         Fit the reward function.
         """
-        reward_pred = self.reward_trunk(state)
+        reward_pred = self.reward_trunk(torch.cat([state, action], dim=-1))
         loss = torch.nn.MSELoss()(reward_pred, reward)
         self.reward_trunk_optimizer.zero_grad()
         loss.backward()
@@ -201,11 +227,12 @@ class LearnableFRandomFeatureEstimator(nn.Module):
         info = {**info_estimate, **info_reward}
         return info
 
-    def save(self, path: str):
+    def save(self, path: str, iter: int | None = None):
         """
         Save the estimator.
         """
-        torch.save(self.state_dict(), os.path.join(path, 'estimator.pth'))
+        fname = f'estimator_{iter}.pth' if iter is not None else 'estimator.pth'
+        torch.save(self.state_dict(), os.path.join(path, fname))
 
     def load(self, path: str):
         """
@@ -226,20 +253,18 @@ class RandomFeatureQNet(nn.Module):
         self.mc_dim = mc_dim
         self.device = device
         # Feature extractor over concatenated [state, action]
-        self.rf = LearnableRandomFeature(input_dim=state_dim + action_dim,
-                                         output_dim=mc_dim,
-                                         hidden_dim=hidden_dim,
-                                         hidden_depth=hidden_depth,
-                                         batch_size=mc_dim,
-                                         sigma=1.,
-                                         learnable_w=True,
-                                         device=device)
+        self.rf = LearnableFRandomFeatureEstimator(state_dim=state_dim,
+                                                   action_dim=action_dim,
+                                                   hidden_dim=hidden_dim,
+                                                   hidden_depth=hidden_depth,
+                                                   mc_dim=mc_dim,
+                                                   device=device,
+                                                   dt=0.05)
         # Linear head from random features to scalar Q
         self.q_head = nn.Linear(mc_dim, 1)
         self.apply(weight_init)
         self.to(device)
-        self.optimizer = torch.optim.Adam(
-            list(self.rf.parameters()) + list(self.q_head.parameters()), lr=1e-3)
+        self.optimizer = torch.optim.Adam(self.q_head.parameters(), lr=1e-3)
 
     def forward(self, state, action):
         """
@@ -248,12 +273,14 @@ class RandomFeatureQNet(nn.Module):
         action: [B, action_dim]
         returns: [B, 1]
         """
-        x = torch.cat([state, action], dim=-1)
-        phi = self.rf(x)
-        q = self.q_head(phi)
+        # x = torch.cat([state, action], dim=-1)
+        phi, _ = self.rf(state, action)
+        q = self.rf.reward_trunk(torch.cat([state, action],
+                                           dim=-1)) + self.q_head(phi)
         return q
 
-    def forward_time_major(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def forward_time_major(self, states: torch.Tensor,
+                           actions: torch.Tensor) -> torch.Tensor:
         """
         Compute Q(s_t, a_t) for time-major inputs.
         states: [T, B, state_dim]
@@ -261,20 +288,56 @@ class RandomFeatureQNet(nn.Module):
         returns: [T, B, 1]
         """
         T, B, _ = states.shape
-        x = torch.cat([states, actions], dim=-1).reshape(T * B, -1)
-        phi = self.rf(x)
-        q = self.q_head(phi).reshape(T, B, 1)
+        # x = torch.cat([states, actions], dim=-1).reshape(T * B, -1)
+        states = states.reshape(T * B, -1)
+        actions = actions.reshape(T * B, -1)
+        phi_sa, _ = self.rf(states, actions)
+        q = self.q_head(phi_sa).reshape(T, B, 1)
         return q
 
-    def load_pretrained_reprsentation(self, path: str):
+    def load_pretrained_reprsentation(self,
+                                      path: str,
+                                      args: dict,
+                                      epoch: int = 10):
         """
         Load pretrained random feature parameters if available at path/rf.pth
         """
-        rf_path = os.path.join(path, 'rf.pth')
+        rf_path = os.path.join(path, f'estimator_{epoch}.pth')
         if os.path.exists(rf_path):
-            self.rf.load_state_dict(torch.load(rf_path, map_location=self.device))
+            self.rf.load_state_dict(
+                torch.load(rf_path, map_location=self.device))
+            self.rf.dt = args['estimator']['dt']
+        else:
+            raise FileNotFoundError(
+                f"Pretrained representation not found at {rf_path}")
+        # Optionally load normalizer stats saved by pretraining
+        stats_path = os.path.join(path, 'normalizer_stats.pth')
+        if os.path.exists(stats_path):
+            try:
+                stats = torch.load(stats_path, map_location='cpu')
+                # lightweight attach for downstream usage
+                self.normalizer_stats = stats
+            except Exception as e:
+                print(f"Warning: failed to load normalizer_stats.pth: {e}")
+        # # Prefer JSON for better interpretability; fallback to legacy .pth
+        # obs_norm_json = os.path.join(path, 'obs_normalizer.json')
+        # if os.path.exists(obs_norm_json):
+        #     try:
+        #         with open(obs_norm_json, 'r') as f:
+        #             self.obs_normalizer = json.load(f)  # {'shift': [...], 'scale': [...]}
+        #     except Exception as e:
+        #         print(f"Warning: failed to load obs_normalizer.json: {e}")
+        # else:
+        #     obs_norm_path = os.path.join(path, 'obs_normalizer.pth')
+        #     if os.path.exists(obs_norm_path):
+        #         try:
+        #             obs_norm = torch.load(obs_norm_path, map_location='cpu')
+        #             self.obs_normalizer = obs_norm
+        #         except Exception as e:
+        #             print(f"Warning: failed to load obs_normalizer.pth: {e}")
 
-    def train(self, state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor, s_tp1: torch.Tensor) -> dict:
+    def train(self, state: torch.Tensor, action: torch.Tensor,
+              reward: torch.Tensor, s_tp1: torch.Tensor) -> dict:
         """
         Legacy single-step regression on immediate reward (kept for compatibility).
         """
@@ -289,9 +352,9 @@ class RandomFeatureQNet(nn.Module):
                    states: torch.Tensor,
                    actions: torch.Tensor,
                    rewards: torch.Tensor,
-                   dones: torch.Tensor,
                    gamma: float,
                    n: int,
+                   dones: torch.Tensor | None = None,
                    mask: torch.Tensor | None = None,
                    reduction: str = 'mean') -> dict:
         """
@@ -299,18 +362,31 @@ class RandomFeatureQNet(nn.Module):
         - states, actions, rewards, dones: [T, B, ...] with rewards/dones shaped [T, B, 1]
         Returns logging dict.
         """
-        q_values = self.forward_time_major(states, actions)  # [T, B, 1]
-        loss, info = td_n_loss(q_values=q_values,
-                               rewards=rewards,
-                               dones=dones,
+        if dones is None:
+            dones = torch.zeros_like(rewards)
+        predicted_q_values = self.forward_time_major(states[:-1],
+                                                     actions[:-1])  # [T, B, 1]
+        with torch.no_grad():
+            target_q_values = self.forward_time_major(states[1:],
+                                                      actions[1:])  # [T, B, 1]
+        loss, info = td_n_loss(target_q_values=target_q_values,
+                               predicted_q_values=predicted_q_values,
+                               rewards=rewards[:-1],
+                               dones=dones[:-1],
                                gamma=gamma,
                                n=n,
-                               mask=mask,
                                reduction=reduction)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
         return info
+
+    def save(self, path: str, iter: int | None = None):
+        """
+        Save the Q-network.
+        """
+        fname = f'qnet_{iter}.pth' if iter is not None else 'qnet.pth'
+        torch.save(self.state_dict(), os.path.join(path, fname))
 
 def weight_init(m):
     """Custom weight init for Conv2D and Linear layers."""
@@ -319,10 +395,41 @@ def weight_init(m):
         if hasattr(m.bias, 'data'):
             m.bias.data.fill_(0.0)
 
+
 def test_get_state_dict():
-    estimator = LearnableFRandomFeatureEstimator(state_dim=10, action_dim=10, hidden_dim=10, hidden_depth=10, mc_dim=10)
+    estimator = LearnableFRandomFeatureEstimator(state_dim=10,
+                                                 action_dim=10,
+                                                 hidden_dim=10,
+                                                 hidden_depth=10,
+                                                 mc_dim=10)
     state_dict = estimator.state_dict()
     print(state_dict.keys())
 
+
+def test_get_random_feature():
+    env = gymnasium.make('HalfCheetah-v5')
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+    q = RandomFeatureQNet(state_dim=state_dim,
+                          action_dim=action_dim,
+                          hidden_dim=256,
+                          hidden_depth=2,
+                          mc_dim=1024,
+                          device=torch.device('cuda'))
+    state = env.reset()
+    action = env.action_space.sample()
+    random_feature = q.rf(state, action)
+    print(random_feature.shape)
+
+def test_qnet_state_dict():
+    q = RandomFeatureQNet(state_dim=10,
+                          action_dim=10,
+                          hidden_dim=10,
+                          hidden_depth=3,
+                          mc_dim=10,
+                          device=torch.device('cuda'))
+    state_dict = q.state_dict()
+    print(state_dict.keys())
+
 if __name__ == '__main__':
-    test_get_state_dict()
+    test_qnet_state_dict()

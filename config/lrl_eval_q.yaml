@@ -1,0 +1,25 @@
+task: eval_q_policy
+
+# Required: set via CLI, e.g., run_dir=/path/to/training/run
+run_dir: run
+
+# Which checkpoint to load. If null, the latest qnet_*.pth is used
+epoch: null
+
+# Eval settings
+episodes: 10
+max_steps: null
+device: cuda
+action_samples: 512
+render: false
+
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: ./log/${run_dir}/eval/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: true
+
+

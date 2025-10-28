@@ -15,11 +15,13 @@ from agents.estimator.random_feature import LearnableFRandomFeatureEstimator
 from agents.estimator.random_feature import RandomFeatureQNet
 from datetime import datetime
 from exp_logger.log_git import log_git_details
+from exp_logger.logger import TensorboardOrWandBLogger
 from functools import partial
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
 from tensorboardX import SummaryWriter
+import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from utilities.dataset_utils import collate_fn
@@ -28,26 +30,26 @@ from utilities.dataset_utils import create_normalizers_from_stats
 from utilities.dataset_utils import normalize_batch_dict
 from utilities.dataset_utils import ConcatMinariDataset
 from utilities.dataset_utils import RandomInterleavedConcatSampler
-from utils import TransitionDataset, LabeledTransitionDataset
-from exp_logger.logger import TensorboardOrWandBLogger
-import wandb
+
 # from evaluation import evaluate
 
 
-@hydra.main(config_path='../config', config_name='lrl_train_repr')
+@hydra.main(config_path='../config', config_name='lrl_train_q')
 def run(args):
 
     if args.logger == 'wandb':
         run = wandb.init(
             project="low_rank_learning",
-            name="train_repr_" + args.suffix,
+            name="train_qnet_only_" + args.suffix,
             config=OmegaConf.to_container(args, resolve=True),
-            group='train_repr',
+            group='train_qnet_only',
         )
-        logger = TensorboardOrWandBLogger(logger='wandb', logger_instance=run)
+        logger = TensorboardOrWandBLogger(logger='wandb', logger_instance=run, log_interval=100)
     else:
         summary_writer = SummaryWriter(os.getcwd())
-        logger = TensorboardOrWandBLogger(logger='tensorboard', logger_instance=summary_writer)
+        logger = TensorboardOrWandBLogger(logger='tensorboard',
+                                          logger_instance=summary_writer,
+                                          log_interval=100)
     log_git_details(log_file=os.path.join(os.getcwd(), 'git.diff'))
 
     dataset_names = getattr(args, 'dataset_names', None)
@@ -116,6 +118,7 @@ def run(args):
             hidden_depth=args.hidden_depth,
             state_dim=state_dim,
             action_dim=action_dim,
+            mc_dim=args.feature_dim,
             device=args.device,
             dt=args.estimator.dt,
             learning_rate=args.estimator.lr)
@@ -125,7 +128,23 @@ def run(args):
     # dataloader = zip(
     #     train_dataloader,
     #     neg_dataloader) if 'contrastive' in args.dynamics else train_dataloader
+    if args.task == 'train_qnet_only':
+        assert args.pretrained_representation_path is not None
+        print(args.pretrained_representation_path)
+        with open(
+                os.path.join(args.pretrained_representation_path,
+                             '.hydra/config.yaml'), 'r') as f:
+            saved_args = yaml.safe_load(f)
+        qnet = RandomFeatureQNet(state_dim=state_dim,
+                                 action_dim=action_dim,
+                                 hidden_dim=args.hidden_dim,
+                                 hidden_depth=args.hidden_depth,
+                                 mc_dim=args.feature_dim,
+                                 device=args.device)
 
+        qnet.load_pretrained_reprsentation(args.pretrained_representation_path,
+                                           saved_args,
+                                           epoch=9)
     global_step = 0
     max_batches = getattr(args, 'train_batches_per_epoch', None)
     for epoch in range(args.train_epochs):
@@ -134,32 +153,28 @@ def run(args):
         for batch, transition in enumerate(pbar):
 
             # Train the estimator
-            assert args.task == 'train_estimator_only'
-            if args.normalize_data:
-                transition = normalize_batch_dict(
-                    transition,
-                    normalizers,
-                    keys=("observations", "next_observations"))
-            # Flat the whole batch and train the estimator
-            state = transition['observations'].reshape(
-                -1, state_dim).float().to(args.device)
-            action = transition['actions'].reshape(
-                -1, action_dim).float().to(args.device)
-            reward = transition['rewards'].reshape(-1, 1).float().to(
-                args.device)
-            s_tp1 = transition['next_observations'].reshape(
-                -1, state_dim).float().to(args.device)
-            info = estimator.train(state, action, reward, s_tp1)
+            assert args.task == 'train_qnet_only'
+            if qnet.normalizer_stats:
+                normalizers = create_normalizers_from_stats(
+                    qnet.normalizer_stats)
+                transition = normalize_batch_dict(transition,
+                                                  normalizers,
+                                                  keys=("observations",
+                                                        "next_observations"))
+            state = transition['observations'].float().to(args.device)
+            action = transition['actions'].float().to(args.device)
+            reward = torch.nn.functional.sigmoid(
+                transition['rewards']).float().to(args.device)
+            # s_tp1 = transition['next_observations'].float().to(args.device)
+            info = qnet.train_td_n(state, action, reward, gamma=0.99, n=3)
             global_step += 1
             logger.log(info, global_step, group='train')
-            pbar.set_postfix(loss=info.get('est_loss'))
+            pbar.set_postfix(loss=info.get('td_n_loss'))
             if max_batches is not None and (batch + 1) >= max_batches:
                 break
 
-        # Save estimator and normalization stats (for later reuse)
-        estimator.save(os.getcwd(), iter=str(epoch))
-
+        # Save the Q-network
+        qnet.save(os.getcwd(), iter=str(epoch))
 
 if __name__ == '__main__':
-
     run()

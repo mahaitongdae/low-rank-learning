@@ -1,2 +1,5 @@
 name: random_feature
+dt: 1.0
+regularizer: 1e-1
+lr: 5e-5
 
