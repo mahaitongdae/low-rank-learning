@@ -3,7 +3,7 @@ import re
 import yaml
 import json
 import time
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Callable
 
 import gymnasium as gym
 import minari
@@ -107,12 +107,34 @@ class QGreedyPolicy:
 def distill_policy_from_qnet(qnet: RandomFeatureQNet,
                              env: gym.Env,
                              observation_normalizer: Optional[Normalizer],
-                             device: torch.device):
+                             device: torch.device = torch.device("cpu")) -> Callable:
     """
     Placeholder for policy distillation from Q-function.
     Return a policy object with an .act(obs) -> action method.
     """
-    return None
+    from utilities.gaussian_diffusion import GaussianDiffusion, get_beta_schedule
+    beta_scale = 0.3
+    betas = get_beta_schedule(beta_schedule="cosine", beta_start=0.0, beta_end=1.0, timesteps=20)
+    betas = beta_scale * betas
+    gd = GaussianDiffusion(betas,
+                           model_mean_type="eps",
+                           model_var_type="fixed-large",
+                           loss_type="mse")
+    print(env.action_space.shape)
+    action_dim = env.action_space.shape[0]
+    def policy_fn(obs):
+        def energy_func(action):
+            if obs.ndim == action.ndim:
+                return qnet(obs, action)
+            elif obs.ndim == action.ndim - 1:
+                # obs is [B, ...] and action is [N, B, action_dim]
+                tilde_obs = obs[None, :, :].repeat(action.shape[0], 1, 1)
+                return qnet(tilde_obs, action)
+            else:
+                raise ValueError(f"Invalid obs and action dimensions: {obs.shape} and {action.shape}")
+        actions = gd.p_sample_idem_from_energy(energy_func, shape=(obs.shape[0], action_dim))
+        return actions.to(device)
+    return policy_fn
 
 
 def evaluate_policy(env: gym.Env,
@@ -197,9 +219,21 @@ def run(args: DictConfig):
     # Save into the Hydra run directory (current working directory)
     with open('eval_q_policy.json', 'w') as f:
         json.dump(out, f, indent=2)
+        
+
+def test_policy_fn():
+    env = gym.make('HalfCheetah-v4')
+    def q_fn(obs, action):
+        assert obs.ndim == action.ndim
+        assert obs.shape[0] == action.shape[0]
+        return torch.ones(obs.shape[:-1], )
+    policy_fn = distill_policy_from_qnet(q_fn, env, None, "cpu")
+    obs, _ = env.reset()
+    action = policy_fn(torch.from_numpy(obs).unsqueeze(0))
+    print(action)
 
 
 if __name__ == '__main__':
-    run()
+    test_policy_fn()
 
 

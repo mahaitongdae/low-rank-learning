@@ -262,3 +262,7 @@ log/
 
 .vscode/
 pretrained/**
+
+**.pdf
+**.jpg
+figures/**

@@ -21,6 +21,21 @@ def get_beta_schedule(beta_schedule, beta_start, beta_end, timesteps, dtype=torc
         betas = _warmup_beta(beta_start, beta_end, timesteps, 0.1, dtype=dtype)
     elif beta_schedule == 'warmup50':
         betas = _warmup_beta(beta_start, beta_end, timesteps, 0.5, dtype=dtype)
+    elif beta_schedule == 'cosine':
+        # Nichol & Dhariwal cosine schedule (Improved DDPM)
+        # alpha_bar(t) = cos^2(((t/T) + s)/(1+s) * pi/2)
+        # beta_t = 1 - alpha_bar(t+1)/alpha_bar(t)
+        s = 0.008
+        def alpha_bar(t_frac: float) -> float:
+            return math.cos((t_frac + s) / (1.0 + s) * math.pi / 2.0) ** 2
+        betas_list = []
+        for i in range(timesteps):
+            t1 = i / timesteps
+            t2 = (i + 1) / timesteps
+            beta = 1.0 - alpha_bar(t2) / alpha_bar(t1)
+            # Clamp to avoid singularities at the end of the schedule
+            betas_list.append(min(max(beta, 1e-8), 0.999))
+        betas = torch.tensor(betas_list, dtype=dtype)
     elif beta_schedule == 'const':
         betas = beta_end * torch.ones(timesteps, dtype=dtype)
     elif beta_schedule == 'jsd':  # 1/T, 1/(T-1), 1/(T-2), ..., 1
@@ -30,27 +45,27 @@ def get_beta_schedule(beta_schedule, beta_start, beta_end, timesteps, dtype=torc
     assert betas.shape == (timesteps, )
     return betas
 
-energy_func_gmm2 = lambda x: (0.8 * torch.exp(- torch.linalg.norm(x - 3., axis=1) ** 2 / 2)
-                  + 0.2 * torch.exp(- torch.linalg.norm(x + 3., axis=1) ** 2 /2 ))
+# energy_func_gmm2 = lambda x: (0.8 * torch.exp(- torch.linalg.norm(x - 3., axis=1) ** 2 / 2)
+#                   + 0.2 * torch.exp(- torch.linalg.norm(x + 3., axis=1) ** 2 /2 ))
 
+def energy_func_gmm(x):
+    """_summary_
 
-def get_idem_score_single(x_t: torch.Tensor, t: float, recon_fn: Callable,
-                          energy_fn: Callable, num_mc_samples: int = 100):
+    Args:
+        x (_type_): _description_
+
+    Raises:
+        NotImplementedError: _description_
+        NotImplementedError: _description_
+        NotImplementedError: _description_
+        NotImplementedError: _description_
+        NotImplementedError: _description_
+
+    Returns:
+        _type_: _description_
     """
-    x_t: (x_shape,)
-    recon_fn: (x_shape,) -> (x_shape,)
-    energy: (x_shape,) -> (x_shape,)
-    """
-    assert x_t.ndim == 1
-    x_shape = x_t.shape[0]
-    size = num_mc_samples
-    noise = torch.randn([size, x_shape]) * t
-    samples = recon_fn(x_t, t, noise)
-    energy = energy_fn(samples)
-    lse = torch.logsumexp(energy, dim=-1)
-    return lse
-
-
+    return torch.log(0.8 * torch.exp(- torch.linalg.norm(x - 3., axis=-1) ** 2 / 2)
+                  + 0.2 * torch.exp(- torch.linalg.norm(x + 3., axis=-1) ** 2 / 2))
 
 class GaussianDiffusion:
 
@@ -141,11 +156,21 @@ class GaussianDiffusion:
                  dtype=torch.float32,
                  device=torch.device("cpu"),
                  ndim=4):
+        """
+        Extract noise schedule coefficients.
+        
+        Args:
+            arr: (timesteps,)
+            t: (t_dim,), usually [1, ] or [B, ]
+            x: (B, ...)
+        Returns:
+            out: (t_dim, (x.ndim - 1) * (1,))
+        """
         if x is not None:
             dtype = x.dtype
             device = x.device
             ndim = x.ndim
-        out = torch.as_tensor(arr, dtype=dtype, device=device).gather(0, t)
+        out = torch.as_tensor(arr, dtype=dtype, device=device).gather(0, t)  # gather arr at dimension 0 and index t
         return out.reshape((-1, ) + (1, ) * (ndim - 1))
 
     def q_mean_var(self, x_0, t):
@@ -188,10 +213,13 @@ class GaussianDiffusion:
         output x_{t-1} ~ p(x_{t-1} | x_t)
 
         """
-        B, C, H, W = x_t.shape
+        if x_t.ndim == 2:
+            B, N = x_t.shape
+        else:
+            B, C, H, W = x_t.shape
         out = denoise_fn(x_t, t)  # \epsilon(x_t, t)
 
-        if self.model_var_type == "learned":
+        if self.model_var_type == "learned" and x_t.ndim == 4:
             assert all(out.shape == (B, 2 * C, H, W))
             out, model_logvar = out.chunk(2, dim=1)
             model_var = torch.exp(model_logvar)
@@ -244,7 +272,7 @@ class GaussianDiffusion:
                       denoise_fn,
                       x_t,
                       t,
-                      clip_denoised=True,
+                      clip_denoised=False,
                       return_pred=False,
                       generator=None):
         '''
@@ -308,6 +336,30 @@ class GaussianDiffusion:
             x_t = torch.empty(shape, device=device).normal_(generator=rng)
         else:
             x_t = noise.to(device)
+        for ti in range(self.timesteps - 1, -1, -1):
+            t.fill_(ti)
+            x_t = self.p_sample_step(denoise_fn, x_t, t, generator=rng)
+        return x_t
+    
+    def p_sample_idem_from_energy(self,
+                      energy_fn,
+                      shape=None,
+                      device=torch.device("cpu"),
+                      noise=None,
+                      seed=None):
+        assert self.model_mean_type == "eps"
+        B = (shape or noise.shape)[0]
+        t = torch.empty((B, ), dtype=torch.int64, device=device)
+        rng = None
+        if seed is not None:
+            rng = torch.Generator(device).manual_seed(seed)
+        if noise is None:
+            x_t = torch.empty(shape, device=device).normal_(generator=rng)
+        else:
+            x_t = noise.to(device)
+            
+        def denoise_fn(x_t, t):
+            return self.get_idem_noise_from_clean_energy_fn(x_t, t, energy_fn)
         for ti in range(self.timesteps - 1, -1, -1):
             t.fill_(ti)
             x_t = self.p_sample_step(denoise_fn, x_t, t, generator=rng)
@@ -498,18 +550,37 @@ class GaussianDiffusion:
         prior_bpd = self._prior_bpd(x_0)
         total_bpd = torch.sum(losses, dim=1) + prior_bpd
         return total_bpd, losses, prior_bpd, mses
+    
+    ## IDEM score functioons
+    def get_idem_score_single(self, x_t: torch.Tensor, t: float, recon_fn: Callable,
+                          energy_fn: Callable, num_mc_samples: int = 100):
+        """
+        x_t: (x_shape,)
+        recon_fn: (x_shape,) -> (x_shape,)
+        energy: (x_shape,) -> (x_shape,)
+        """
+        assert x_t.ndim == 1
+        x_shape = x_t.shape[0]
+        size = num_mc_samples
+        noise = torch.randn([size, x_shape]) * t
+        samples = self.reverse_sample(x_t, t, noise)
+        energy = energy_fn(samples)
+        lse = torch.logsumexp(energy, dim=-1)
+        return lse
 
-    def get_idem_score_unbalanced_gmm(self, x_t, t):
+    def get_idem_noise_from_clean_energy_fn(self, x_t, t, energy_fn, num_mc_samples: int = 100):
         """
         Get the score function from energy funtion using IDEM, https://arxiv.org/pdf/2402.06121.
         
         """
         x_t = x_t.detach_().requires_grad_(True)
-        def recon_fn(x_t, t, noise):
-            reciprocal_sqrt_alphas_bar = self._extract(self.sqrt_recip_alphas_bar, t, x_t)
-            return reciprocal_sqrt_alphas_bar * x_t - noise
-        lse = torch.vmap(get_idem_score_single, (0, 0, None, None),
-                         randomness="different")(x_t, t, recon_fn, energy_func_gmm2)
+        # lse = torch.vmap(self.get_idem_score_single, (0, 0, None, None),
+        #                  randomness="different")(x_t, t, energy_fn)
+        noise = torch.randn([num_mc_samples, *x_t.shape])  # (num_mc_samples, B, x_dim)
+        x_0 = self.reverse_sample(x_t, t, noise)
+        energy = energy_fn(x_0)
+        assert energy.ndim == x_0.ndim - 1
+        lse = torch.logsumexp(energy, dim=0)  # (B, )
         score = torch.autograd.grad(lse.sum(), x_t)[0]  # score function
         scale = self._extract(self.sqrt_one_minus_alphas_bar, t,
                               x_t)  # predicted noise
@@ -525,5 +596,38 @@ def test_gaussian_diffusion():
     x_t = gd.p_sample(denoise_fn=lambda x, t: x, shape=(1, 2, 28, 28))
     print(x_t.shape)
 
+def test_idem_score_unbalanced_gmm(beta_scale: float = 0.3):
+    import matplotlib.pyplot as plt
+    betas = beta_scale * get_beta_schedule(beta_schedule="cosine", beta_start=0.0, beta_end=1.0, timesteps=20)
+    gd = GaussianDiffusion(betas,
+                           model_mean_type="eps",
+                           model_var_type="fixed-large",
+                           loss_type="mse")
+    x_t = torch.randn(16, 2)
+    print(x_t.shape)
+    score = gd.get_idem_noise_from_clean_energy_fn(x_t, torch.tensor([5]), energy_func_gmm)
+    print(score.shape)
+    print("Test the full generation process")
+    x_t = gd.p_sample_idem_from_energy(energy_func_gmm, shape=(1024, 2))
+    print(x_t.shape)
+    x_t = x_t.detach().cpu().numpy()
+    plt.figure(figsize=(5, 5))
+    plt.scatter(x_t[:, 0], x_t[:, 1], s=5, alpha=0.5)
+    plt.axis("equal")
+    plt.grid(True)
+    plt.title("IDEM generated samples")
+    plt.xlim(-6, 6)
+    plt.ylim(-6, 6)
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.savefig(f"./figures/idem_generated_samples_beta_scale_{beta_scale}.jpg")
+
+def test_energy_func_gmm():
+    x = torch.randn(10, 10, 2)
+    energy = energy_func_gmm(x)
+    assert energy.ndim == x.ndim - 1
+    print(energy.shape)
+
 if __name__ == '__main__':
-    test_gaussian_diffusion()
+    for beta_scale in [0.1, 0.3, 0.5, 0.7, 0.9]:
+        test_idem_score_unbalanced_gmm(beta_scale)
