@@ -12,6 +12,7 @@ max_steps: null
 device: cuda
 action_samples: 512
 render: false
+run_dir: /home/haitong/PycharmProjects/low_rank_learning/log/minari_halfcheetah_expert/random_feature_qnet/2025-10-27_21-07-10_s0_default
 
 defaults:
   - _self_
