@@ -217,7 +217,7 @@ class LearnableFRandomFeatureEstimator(nn.Module):
         self.reward_trunk_optimizer.step()
         return {'reward_loss': loss.item()}
 
-    def train(self, state: torch.Tensor, action: torch.Tensor,
+    def train_(self, state: torch.Tensor, action: torch.Tensor,
               reward: torch.Tensor, s_tp1: torch.Tensor) -> dict:
         """
         Train the estimator.
@@ -298,18 +298,50 @@ class RandomFeatureQNet(nn.Module):
     def load_pretrained_reprsentation(self,
                                       path: str,
                                       args: dict,
-                                      epoch: int = 10):
+                                      epoch: int | None = None):
         """
-        Load pretrained random feature parameters if available at path/rf.pth
+        Load pretrained random feature parameters.
+        - If `epoch` is provided, loads `estimator_{epoch}.pth`.
+        - If `epoch` is None, finds the latest `estimator_*.pth` by max epoch.
+          Falls back to `estimator.pth` if no numbered checkpoints are found.
         """
-        rf_path = os.path.join(path, f'estimator_{epoch}.pth')
-        if os.path.exists(rf_path):
-            self.rf.load_state_dict(
-                torch.load(rf_path, map_location=self.device))
-            self.rf.dt = args['estimator']['dt']
+        rf_path = None
+        if epoch is not None:
+            candidate = os.path.join(path, f'estimator_{epoch}.pth')
+            if os.path.exists(candidate):
+                rf_path = candidate
         else:
+            # discover the latest estimator_*.pth by numeric suffix
+            try:
+                files = os.listdir(path)
+            except FileNotFoundError:
+                files = []
+            epochs = []
+            prefix = 'estimator_'
+            suffix = '.pth'
+            for fname in files:
+                if fname.startswith(prefix) and fname.endswith(suffix):
+                    num_str = fname[len(prefix):-len(suffix)]
+                    if num_str.isdigit():
+                        epochs.append(int(num_str))
+            if len(epochs) > 0:
+                latest = max(epochs)
+                candidate = os.path.join(path, f'estimator_{latest}.pth')
+                if os.path.exists(candidate):
+                    rf_path = candidate
+            # fallback to plain estimator.pth
+            if rf_path is None:
+                candidate = os.path.join(path, 'estimator.pth')
+                if os.path.exists(candidate):
+                    rf_path = candidate
+
+        if rf_path is None:
             raise FileNotFoundError(
-                f"Pretrained representation not found at {rf_path}")
+                f"No pretrained representation found in {path}. "
+                f"Expected 'estimator_<epoch>.pth' or 'estimator.pth'.")
+
+        self.rf.load_state_dict(torch.load(rf_path, map_location=self.device))
+        self.rf.dt = args['estimator']['dt']
         # Optionally load normalizer stats saved by pretraining
         stats_path = os.path.join(path, 'normalizer_stats.pth')
         if os.path.exists(stats_path):
@@ -336,7 +368,7 @@ class RandomFeatureQNet(nn.Module):
         #         except Exception as e:
         #             print(f"Warning: failed to load obs_normalizer.pth: {e}")
 
-    def train(self, state: torch.Tensor, action: torch.Tensor,
+    def train_(self, state: torch.Tensor, action: torch.Tensor,
               reward: torch.Tensor, s_tp1: torch.Tensor) -> dict:
         """
         Legacy single-step regression on immediate reward (kept for compatibility).

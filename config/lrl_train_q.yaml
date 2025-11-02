@@ -25,8 +25,8 @@ hidden_depth: 3
 hidden_dim: 512
 
 # load
-pretrained_representation_path: /home/haitong/PycharmProjects/low_rank_learning/log/minari_halfcheetah_simple-v0/random_feature/2025-10-27_20-46-46_s0_default
-
+# pretrained_representation_path: /home/haitong/PycharmProjects/low_rank_learning/log/minari_halfcheetah_simple-v0/random_feature/2025-10-27_20-46-46_s0_default
+pretrained_representation_path: /Users/mahaitong/Dropbox (Harvard University)/data/low_rank_learning/pretrained/repr/2025-10-27_20-46-46_s0_default
 
 defaults:
  - _self_

@@ -1,15 +1,16 @@
 task: eval_q_policy
 
 # Required: set via CLI, e.g., run_dir=/path/to/training/run
-run_dir: run
+run_dir: /Users/mahaitong/Dropbox (Harvard University)/data/low_rank_learning/pretrained/q/2025-10-27_21-07-10_s0_default
+
 
 # Which checkpoint to load. If null, the latest qnet_*.pth is used
 epoch: null
 
 # Eval settings
 episodes: 10
-max_steps: null
-device: cuda
+max_steps: 1000
+device: cpu
 action_samples: 512
 render: false
 
