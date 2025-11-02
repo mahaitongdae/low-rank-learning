@@ -149,7 +149,7 @@ def run(args):
                 args.device)
             s_tp1 = transition['next_observations'].reshape(
                 -1, state_dim).float().to(args.device)
-            info = estimator.train(state, action, reward, s_tp1)
+            info = estimator.train_(state, action, reward, s_tp1)
             global_step += 1
             logger.log(info, global_step, group='train')
             pbar.set_postfix(loss=info.get('est_loss'))

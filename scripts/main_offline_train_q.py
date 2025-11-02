@@ -163,8 +163,9 @@ def run(args):
                                                         "next_observations"))
             state = transition['observations'].float().to(args.device)
             action = transition['actions'].float().to(args.device)
-            reward = torch.nn.functional.sigmoid(
-                transition['rewards']).float().to(args.device)
+            # reward = torch.nn.functional.sigmoid(
+            #     transition['rewards']).float().to(args.device)
+            reward = ((transition['rewards'] - 6.0) / 0.5).float().to(args.device)  # a temporary fix for the reward normalization
             # s_tp1 = transition['next_observations'].float().to(args.device)
             info = qnet.train_td_n(state, action, reward, gamma=0.99, n=3)
             global_step += 1

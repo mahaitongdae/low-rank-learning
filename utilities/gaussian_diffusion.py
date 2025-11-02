@@ -272,7 +272,7 @@ class GaussianDiffusion:
                       denoise_fn,
                       x_t,
                       t,
-                      clip_denoised=False,
+                      clip_denoised=True,
                       return_pred=False,
                       generator=None):
         '''
@@ -568,7 +568,7 @@ class GaussianDiffusion:
         lse = torch.logsumexp(energy, dim=-1)
         return lse
 
-    def get_idem_noise_from_clean_energy_fn(self, x_t, t, energy_fn, num_mc_samples: int = 100):
+    def get_idem_noise_from_clean_energy_fn(self, x_t, t, energy_fn, num_mc_samples: int = 16):
         """
         Get the score function from energy funtion using IDEM, https://arxiv.org/pdf/2402.06121.
         
@@ -578,8 +578,8 @@ class GaussianDiffusion:
         #                  randomness="different")(x_t, t, energy_fn)
         noise = torch.randn([num_mc_samples, *x_t.shape])  # (num_mc_samples, B, x_dim)
         x_0 = self.reverse_sample(x_t, t, noise)
-        energy = energy_fn(x_0)
-        assert energy.ndim == x_0.ndim - 1
+        energy = energy_fn(x_0)  # (num_mc_samples, B, )
+        assert energy.ndim == x_0.ndim - 1, f"Energy has {energy.shape} shape, x_0 shape is {x_0.shape}"
         lse = torch.logsumexp(energy, dim=0)  # (B, )
         score = torch.autograd.grad(lse.sum(), x_t)[0]  # score function
         scale = self._extract(self.sqrt_one_minus_alphas_bar, t,
