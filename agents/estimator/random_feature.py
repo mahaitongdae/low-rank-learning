@@ -340,7 +340,11 @@ class RandomFeatureQNet(nn.Module):
                 f"No pretrained representation found in {path}. "
                 f"Expected 'estimator_<epoch>.pth' or 'estimator.pth'.")
 
-        self.rf.load_state_dict(torch.load(rf_path, map_location=self.device))
+        pretrained_state_dict = torch.load(rf_path, map_location='cpu')
+        if 'epsilon' in pretrained_state_dict.keys():
+            pretrained_state_dict.pop('epsilon')
+            print(f"[Warning]: poping epsilong out, since it is not trained in the pretrained representation.")
+        self.rf.load_state_dict(pretrained_state_dict, strict=False)
         self.rf.dt = args['estimator']['dt']
         # Optionally load normalizer stats saved by pretraining
         stats_path = os.path.join(path, 'normalizer_stats.pth')
@@ -369,7 +373,7 @@ class RandomFeatureQNet(nn.Module):
         #             print(f"Warning: failed to load obs_normalizer.pth: {e}")
 
     def train_(self, state: torch.Tensor, action: torch.Tensor,
-              reward: torch.Tensor, s_tp1: torch.Tensor) -> dict:
+               reward: torch.Tensor, s_tp1: torch.Tensor) -> dict:
         """
         Legacy single-step regression on immediate reward (kept for compatibility).
         """

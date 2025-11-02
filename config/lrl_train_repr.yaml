@@ -2,7 +2,7 @@ task: train_estimator_only
 normalize_data: true
 
 device: cuda
-dynamics: minari_halfcheetah_mix
+dynamics: mujoco_halfcheetah_mix
 # Either specify a single dataset_name or a list in dataset_names.
 # dataset_name: mujoco/halfcheetah/simple-v0
 # Example for multiple datasets (commented out by default):

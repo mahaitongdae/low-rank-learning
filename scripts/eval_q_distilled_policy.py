@@ -15,6 +15,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from agents.estimator.random_feature import RandomFeatureQNet
 from utilities.dataset_utils import Normalizer
+from utilities.dataset_utils import process_dataset_name
 
 
 def load_saved_config(run_dir: str) -> dict:
@@ -25,16 +26,17 @@ def load_saved_config(run_dir: str) -> dict:
         return yaml.safe_load(f)
 
 
-def load_env_from_config(cfg: dict):
+def load_env_from_config(cfg: dict, render=False):
     # Prefer single dataset_name; fallback to first in dataset_names
     dataset_name = cfg.get('dataset_name')
     dataset_names = cfg.get('dataset_names')
+    dataset_name = process_dataset_name(dataset_name)
     if not dataset_name and dataset_names:
         dataset_name = dataset_names[0]
     if not dataset_name:
         raise ValueError("No dataset_name found in saved config")
     env_source = minari.load_dataset(dataset_name, download=True)
-    env = env_source.recover_environment(render_mode="human")
+    env = env_source.recover_environment(render_mode="human" if render else None)
     return env
 
 
@@ -105,17 +107,20 @@ class QGreedyPolicy:
         return actions[best]
 
 
-def distill_policy_from_qnet(qnet: RandomFeatureQNet,
-                             env: gym.Env,
-                             observation_normalizer: Optional[Normalizer],
-                             device: torch.device = torch.device("cpu")) -> Callable[[np.ndarray, float], np.ndarray]:
+def distill_policy_from_qnet(
+        qnet: RandomFeatureQNet, env: gym.Env,
+        observation_normalizer: Optional[Normalizer],
+        beta_scale: float = 0.3) -> Callable[[np.ndarray, float], np.ndarray]:
     """
     Placeholder for policy distillation from Q-function.
     Return a policy object with an Callable[[obs], action] method.
     """
     from utilities.gaussian_diffusion import GaussianDiffusion, get_beta_schedule
-    beta_scale = 0.3
-    betas = get_beta_schedule(beta_schedule="cosine", beta_start=0.0, beta_end=1.0, timesteps=20)
+    beta_scale = beta_scale
+    betas = get_beta_schedule(beta_schedule="cosine",
+                              beta_start=0.0,
+                              beta_end=1.0,
+                              timesteps=20)
     betas = beta_scale * betas
     gd = GaussianDiffusion(betas,
                            model_mean_type="eps",
@@ -123,23 +128,33 @@ def distill_policy_from_qnet(qnet: RandomFeatureQNet,
                            loss_type="mse")
     print(env.action_space.shape)
     action_dim = env.action_space.shape[0]
-    def policy_fn(obs, temperature: float = 1.0):
+
+    def policy_fn(obs, temperature: float = 1.0, best_of_n: int = 1):
+        assert temperature > 1e-6, f"Temperature must be greater than 1e-6, but got {temperature}"
         if isinstance(obs, np.ndarray):
             obs = torch.from_numpy(obs).float()
             obs = observation_normalizer(obs)
         if obs.ndim == 1:
             obs = obs.unsqueeze(0)
+
         def energy_func(action):
             if obs.ndim == action.ndim:
                 return qnet(obs, action) / temperature
             elif obs.ndim == action.ndim - 1:
                 # obs is [B, ...] and action is [N, B, action_dim]
                 tilde_obs = obs[None, :, :].repeat(action.shape[0], 1, 1)
-                return torch.vmap(qnet, (0, 0))(tilde_obs, action).squeeze(dim=-1) / temperature
+                return torch.vmap(qnet, (0, 0))(
+                    tilde_obs, action).squeeze(dim=-1) / temperature
             else:
-                raise ValueError(f"Invalid obs and action dimensions: {obs.shape} and {action.shape}")
-        actions = gd.p_sample_idem_from_energy(energy_func, shape=(obs.shape[0], action_dim))
+                raise ValueError(
+                    f"Invalid obs and action dimensions: {obs.shape} and {action.shape}"
+                )
+
+        actions = gd.p_sample_idem_from_energy(energy_func,
+                                               shape=(obs.shape[0],
+                                                      action_dim))
         return actions.squeeze(dim=0).detach().cpu().numpy()
+
     return policy_fn
 
 
@@ -147,11 +162,10 @@ def evaluate_policy(env: gym.Env,
                     policy: Callable[[np.ndarray], np.ndarray],
                     episodes: int = 5,
                     max_steps: Optional[int] = None,
-                    render: bool = False) -> List[float]:
+                    render: bool = False,
+                    temperature: float = 1.0) -> List[float]:
     returns = []
-    temperatures = [1.0]
     for e in range(episodes):
-        temperature = temperatures[e % len(temperatures)]
         obs, _ = env.reset()
         ep_ret = 0.0
         steps = 0
@@ -174,7 +188,9 @@ def evaluate_policy(env: gym.Env,
 @hydra.main(config_path='../config', config_name='lrl_eval_q')
 def run(args: DictConfig):
     if args.run_dir is None:
-        raise ValueError("Please provide run_dir via Hydra, e.g., run_dir=/path/to/training/run")
+        raise ValueError(
+            "Please provide run_dir via Hydra, e.g., run_dir=/path/to/training/run"
+        )
 
     train_cfg = load_saved_config(args.run_dir)
     env = load_env_from_config(train_cfg)
@@ -182,7 +198,7 @@ def run(args: DictConfig):
     action_dim = env.action_space.shape[0]
 
     # device_str = args.device or train_cfg.get('device', 'cpu')
-    device_str = "cpu"
+    device_str = args.device or "cpu"
     device = torch.device(device_str)
 
     qnet = RandomFeatureQNet(state_dim=state_dim,
@@ -197,53 +213,68 @@ def run(args: DictConfig):
 
     obs_norm = load_observation_normalizer(args.run_dir)
 
-    policy = distill_policy_from_qnet(qnet, env, obs_norm, device)
+    policy = distill_policy_from_qnet(qnet,
+                                      env,
+                                      obs_norm,
+                                      beta_scale=args.beta_scale)
     if policy is None:
         policy = QGreedyPolicy(qnet=qnet,
                                action_space=env.action_space,
                                observation_normalizer=obs_norm,
                                device=device,
                                action_samples=args.action_samples)
-
-    start = time.time()
-    returns = evaluate_policy(env=env,
-                              policy=policy,
-                              episodes=args.episodes,
-                              max_steps=args.max_steps,
-                              render=args.render)
-    duration = time.time() - start
-    print(f"Evaluated {args.episodes} episodes in {duration:.2f}s")
-    print(f"Returns: mean={np.mean(returns):.2f}, std={np.std(returns):.2f}, min={np.min(returns):.2f}, max={np.max(returns):.2f}")
-
+    returns = []
+    if isinstance(args.temperature, list):
+        temperatures = args.temperature
+    else:
+        temperatures = [args.temperature]
+    for temperature in temperatures:
+        start = time.time()
+        returns = evaluate_policy(env=env,
+                                  policy=policy,
+                                  episodes=args.episodes,
+                                  max_steps=args.max_steps,
+                                  render=args.render,
+                                  temperature=temperature)
+        duration = time.time() - start
+        print(f"Evaluated {args.episodes} episodes in {duration:.2f}s")
+        print(
+            f"Temperature: {temperature}, Returns: mean={np.mean(returns):.2f}, std={np.std(returns):.2f}, min={np.min(returns):.2f}, max={np.max(returns):.2f}"
+        )
+        returns.append({
+            'temperature': temperature,
+            'returns': returns,
+            'duration': duration,
+            'mean': np.mean(returns),
+            'std': np.std(returns),
+            'min': np.min(returns),
+            'max': np.max(returns),
+        })
     # Persist a simple summary next to the run
     out = {
         'checkpoint': os.path.basename(ckpt_path),
         'episodes': int(args.episodes),
         'run_dir': args.run_dir,
-        'returns': returns,
-        'stats': {
-            'mean': float(np.mean(returns)),
-            'std': float(np.std(returns)),
-            'min': float(np.min(returns)),
-            'max': float(np.max(returns)),
-        }
+        'returns': returns
     }
     # Save into the Hydra run directory (current working directory)
     with open('eval_q_policy.json', 'w') as f:
         json.dump(out, f, indent=2)
-        
+
 @hydra.main(config_path='../config', config_name='lrl_eval_q')
 def test_policy_fn(args: DictConfig):
     if args.run_dir is None:
-        raise ValueError("Please provide run_dir via Hydra, e.g., run_dir=/path/to/training/run")
+        raise ValueError(
+            "Please provide run_dir via Hydra, e.g., run_dir=/path/to/training/run"
+        )
 
     train_cfg = load_saved_config(args.run_dir)
-    env = load_env_from_config(train_cfg)
+    env = load_env_from_config(train_cfg, render=False)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
     # device_str = args.device or train_cfg.get('device', 'cpu')
-    device_str = "cpu"
+    device_str = args.device or "cpu"
     device = torch.device(device_str)
 
     qnet = RandomFeatureQNet(state_dim=state_dim,
@@ -258,20 +289,24 @@ def test_policy_fn(args: DictConfig):
 
     obs_norm = load_observation_normalizer(args.run_dir)
 
-    policy = distill_policy_from_qnet(qnet, env, obs_norm, device)
+    policy = distill_policy_from_qnet(qnet, env, obs_norm, beta_scale=args.beta_scale)
     obs, _ = env.reset()
-    for temperature in [1.0, 0.5, 0.1, 0.01, 0.001]:
+    if isinstance(args.temperature, list):
+        temperatures = args.temperature
+    else:
+        temperatures = [args.temperature]
+    for temperature in temperatures:
         action = policy(obs, temperature=temperature)
-        q_value = qnet(torch.from_numpy(obs).float().unsqueeze(0), 
-                       torch.from_numpy(action).float().unsqueeze(0)
-                       ).squeeze(dim=-1)
-        print(f"Temperature: {temperature}, Action: {action}, Q-value: {q_value.item()}")
+        q_value = qnet(
+            torch.from_numpy(obs).float().unsqueeze(0),
+            torch.from_numpy(action).float().unsqueeze(0)).squeeze(dim=-1)
+        print(
+            f"Temperature: {temperature}, Action: {action}, Q-value: {q_value.item()}"
+        )
     env.close()
-    
-    
+
+
 
 
 if __name__ == '__main__':
-    run()
-
-
+    test_policy_fn()

@@ -1,9 +1,5 @@
 task: eval_q_policy
 
-# Required: set via CLI, e.g., run_dir=/path/to/training/run
-run_dir: /Users/mahaitong/Dropbox (Harvard University)/data/low_rank_learning/pretrained/q/2025-10-27_21-07-10_s0_default
-
-
 # Which checkpoint to load. If null, the latest qnet_*.pth is used
 epoch: null
 
@@ -12,15 +8,18 @@ episodes: 10
 max_steps: 1000
 device: cpu
 action_samples: 512
+run_dir: /home/haitong/PycharmProjects/low_rank_learning/log/mujoco_halfcheetah_simple/random_feature_qnet/2025-11-02_16-26-49_s0_fdim2048_tdn3_reward_minus_6
+# run_dir: /Users/mahaitong/Dropbox (Harvard University)/data/low_rank_learning/pretrained/q/2025-10-27_21-07-10_s0_default
+temperature: 1.0
+beta_scale: 0.3
 render: false
-run_dir: /home/haitong/PycharmProjects/low_rank_learning/log/minari_halfcheetah_expert/random_feature_qnet/2025-10-27_21-07-10_s0_default
 
 defaults:
   - _self_
 
 hydra:
   run:
-    dir: ./log/${run_dir}/eval/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ${run_dir}/eval/${now:%Y-%m-%d_%H-%M-%S}
   job:
     chdir: true
 

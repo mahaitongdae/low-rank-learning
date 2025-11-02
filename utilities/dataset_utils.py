@@ -258,6 +258,11 @@ def collate_fn(batch,
         # map_fn(batch[0].truncations),
     }
 
+def process_dataset_name(dataset_name: str) -> str:
+    if dataset_name.startswith('mujoco_'):
+        return dataset_name.replace('_', '/') + '-v0'
+    else:
+        return dataset_name
 
 def test_get_dataset():
     dataset = minari.load_dataset('mujoco/halfcheetah/simple-v0',

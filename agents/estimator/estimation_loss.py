@@ -74,13 +74,13 @@ def td_n_loss(target_q_values: torch.Tensor,
     info : dict
         Diagnostic scalars.
     """
-    if predicted_q_values.dim() == 3:
+    if predicted_q_values.dim() == 3:  # [T, B, 1] -> [T, B]
         predicted_q_values = predicted_q_values.squeeze(-1)
-    if target_q_values.dim() == 3:
+    if target_q_values.dim() == 3:  # [T, B, 1] -> [T, B]
         target_q_values = target_q_values.squeeze(-1)
-    if rewards.dim() == 3:
+    if rewards.dim() == 3:  # [T, B, 1] -> [T, B]
         rewards = rewards.squeeze(-1)
-    if dones.dim() == 3:
+    if dones.dim() == 3:  # [T, B, 1] -> [T, B]
         dones = dones.squeeze(-1)
     assert predicted_q_values.dim() == rewards.dim() == dones.dim(
     ) == 2, "Expect [T, B] tensors"
@@ -118,6 +118,9 @@ def td_n_loss(target_q_values: torch.Tensor,
         'td_n_loss': loss.item(),
         'q_mean': predicted_q_values.mean().item(),
         'target_mean': targets.mean().item(),
+        'target_std': targets.std(dim=1).mean().item(),
+        'target_max': targets.max(dim=1).values.mean().item(),
+        'target_min': targets.min(dim=1).values.mean().item(),
         'td_error_abs_mean': td_error.abs().mean().item(),
     }
     return loss, info
