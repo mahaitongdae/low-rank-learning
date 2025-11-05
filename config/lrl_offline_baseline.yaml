@@ -1,0 +1,46 @@
+task: offline_baseline
+normalize_data: true
+
+device: cuda
+dataset_name: mujoco_halfcheetah_simple
+# Example: multiple datasets
+# dataset_names:
+#   - mujoco/halfcheetah/simple-v0
+#   - mujoco/halfcheetah/medium-v0
+#   - mujoco/halfcheetah/expert-v0
+
+train_batch_size: 1
+train_batches_per_epoch: 2048
+train_epochs: 10
+lr: 0.0003
+logger: wandb
+seed: 0
+suffix: default
+td_n_horizon: 3
+
+# CQL options
+cql:
+  enabled: false
+  alpha: 1.0
+  temperature: 1.0
+  num_uniform_actions: 10
+  num_policy_actions: 10
+  subtract_log_num_actions: true
+
+# policy training (optional)
+train_policy: false
+actor_lr: 0.0003
+policy_alpha: 0.2
+policy_hidden_dim: 256
+policy_hidden_depth: 2
+log_std_bounds: [-5.0, 2.0]
+
+# model (simple MLP Q)
+hidden_depth: 3
+hidden_dim: 512
+
+hydra:
+  run:
+    dir: ./log/${dataset_name}/baseline_qnet/${now:%Y-%m-%d_%H-%M-%S}_s${seed}_hdim${hidden_dim}_tdn${td_n_horizon}_${suffix}
+  job:
+    chdir: true

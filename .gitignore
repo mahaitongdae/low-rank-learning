@@ -266,3 +266,7 @@ pretrained/**
 **.pdf
 **.jpg
 figures/**
+
+d3rlpy_logs/**
+d3rlpy_data/**
+wandb/**

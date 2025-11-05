@@ -8,11 +8,13 @@ episodes: 10
 max_steps: 1000
 device: cpu
 action_samples: 512
-run_dir: /home/haitong/PycharmProjects/low_rank_learning/log/mujoco_halfcheetah_simple/random_feature_qnet/2025-11-02_16-26-49_s0_fdim2048_tdn3_reward_minus_6
+run_dir: /home/haitong/PycharmProjects/low_rank_learning/log/mujoco_halfcheetah_simple/random_feature_qnet/2025-11-02_18-05-57_s0_fdim2048_tdn3_reward_minus_6
 # run_dir: /Users/mahaitong/Dropbox (Harvard University)/data/low_rank_learning/pretrained/q/2025-10-27_21-07-10_s0_default
 temperature: 1.0
 beta_scale: 0.3
 render: false
+
+policy_type: learned
 
 defaults:
   - _self_

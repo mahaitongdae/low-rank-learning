@@ -14,8 +14,10 @@ from tqdm import tqdm
 from omegaconf import DictConfig, OmegaConf
 
 from agents.estimator.random_feature import RandomFeatureQNet
+from agents.policies import DiagGaussianPolicy
 from utilities.dataset_utils import Normalizer
 from utilities.dataset_utils import process_dataset_name
+from envs.wrappers import NormalizeStateWrapper, check_and_normalize_box_actions
 
 
 def load_saved_config(run_dir: str) -> dict:
@@ -37,6 +39,30 @@ def load_env_from_config(cfg: dict, render=False):
         raise ValueError("No dataset_name found in saved config")
     env_source = minari.load_dataset(dataset_name, download=True)
     env = env_source.recover_environment(render_mode="human" if render else None)
+    return env
+
+
+def wrap_env_with_saved_normalizer(env: gym.Env, run_dir: str) -> gym.Env:
+    """Apply action normalization and observation normalization via wrappers.
+
+    Uses saved observation stats from the training run directory if available.
+    """
+    # Normalize actions to [-1, 1] interface if needed
+    env = check_and_normalize_box_actions(env)
+
+    # Normalize observations using saved stats when present
+    stats_path = os.path.join(run_dir, 'normalizer_stats.pth')
+    if os.path.exists(stats_path):
+        try:
+            stats = torch.load(stats_path, map_location='cpu')
+            obs_stats = stats.get('observations')
+            if obs_stats is not None:
+                norm = Normalizer(mean=obs_stats['mean'], std=obs_stats['std'])
+                shift, scale = norm.shift_scale()
+                env = NormalizeStateWrapper(env, shift=shift, scale=scale)
+        except Exception:
+            # If loading fails, proceed without observation normalization
+            pass
     return env
 
 
@@ -108,7 +134,8 @@ class QGreedyPolicy:
 
 
 def distill_policy_from_qnet(
-        qnet: RandomFeatureQNet, env: gym.Env,
+        qnet: RandomFeatureQNet,
+        env: gym.Env,
         observation_normalizer: Optional[Normalizer],
         beta_scale: float = 0.3) -> Callable[[np.ndarray, float], np.ndarray]:
     """
@@ -133,7 +160,8 @@ def distill_policy_from_qnet(
         assert temperature > 1e-6, f"Temperature must be greater than 1e-6, but got {temperature}"
         if isinstance(obs, np.ndarray):
             obs = torch.from_numpy(obs).float()
-            obs = observation_normalizer(obs)
+            if observation_normalizer is not None:
+                obs = observation_normalizer(obs)
         if obs.ndim == 1:
             obs = obs.unsqueeze(0)
 
@@ -159,7 +187,7 @@ def distill_policy_from_qnet(
 
 
 def evaluate_policy(env: gym.Env,
-                    policy: Callable[[np.ndarray], np.ndarray],
+                    policy: Callable[[np.ndarray, float], np.ndarray],
                     episodes: int = 5,
                     max_steps: Optional[int] = None,
                     render: bool = False,
@@ -176,9 +204,10 @@ def evaluate_policy(env: gym.Env,
             action = policy(obs, temperature)
             obs, reward, terminated, truncated, _ = env.step(action)
             ep_ret += float(reward)
-            print(f"Step {step + 1}, Reward: {reward}")
             steps += 1
-            if terminated or truncated or (max_steps is not None and steps >= max_steps):
+            pbar.set_postfix(reward=reward)
+            if terminated or truncated or (max_steps is not None
+                                           and steps >= max_steps):
                 break
         returns.append(ep_ret)
         print(f"Temperature: {temperature}, Return: {ep_ret}")
@@ -193,7 +222,9 @@ def run(args: DictConfig):
         )
 
     train_cfg = load_saved_config(args.run_dir)
-    env = load_env_from_config(train_cfg)
+    env = load_env_from_config(train_cfg, render=args.render)
+    # Apply normalization via wrappers instead of inside policies
+    env = wrap_env_with_saved_normalizer(env, args.run_dir)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
@@ -201,28 +232,43 @@ def run(args: DictConfig):
     device_str = args.device or "cpu"
     device = torch.device(device_str)
 
-    qnet = RandomFeatureQNet(state_dim=state_dim,
-                             action_dim=action_dim,
-                             hidden_dim=int(train_cfg['hidden_dim']),
-                             hidden_depth=int(train_cfg['hidden_depth']),
-                             mc_dim=int(train_cfg['feature_dim']),
-                             device=device)
-    ckpt_path = find_q_checkpoint(args.run_dir, args.epoch)
-    qnet.load_state_dict(torch.load(ckpt_path, map_location=device))
-    qnet.eval()
+    baseline = 'baseline' in train_cfg['task']
 
-    obs_norm = load_observation_normalizer(args.run_dir)
+    if not baseline:
+        qnet = RandomFeatureQNet(state_dim=state_dim,
+                                 action_dim=action_dim,
+                                 hidden_dim=int(train_cfg['hidden_dim']),
+                                 hidden_depth=int(train_cfg['hidden_depth']),
+                                 mc_dim=int(train_cfg['feature_dim']),
+                                 device=device)
+        ckpt_path = find_q_checkpoint(args.run_dir, args.epoch)
+        qnet.load_state_dict(torch.load(ckpt_path, map_location=device))
+        qnet.eval()
+    else:
+        qnet = None
 
-    policy = distill_policy_from_qnet(qnet,
-                                      env,
-                                      obs_norm,
-                                      beta_scale=args.beta_scale)
-    if policy is None:
-        policy = QGreedyPolicy(qnet=qnet,
-                               action_space=env.action_space,
-                               observation_normalizer=obs_norm,
-                               device=device,
-                               action_samples=args.action_samples)
+    if baseline or args.policy_type == 'learned':
+        policy_net = DiagGaussianPolicy(
+            obs_dim=state_dim,
+            action_dim=action_dim,
+            hidden_dim=train_cfg['policy_hidden_dim'],
+            hidden_depth=train_cfg['policy_hidden_depth'],
+            log_std_bounds=tuple(train_cfg['log_std_bounds'])).to(device_str)
+        policy_net.load(args.run_dir)
+
+        def policy(obs, temperature: float = 1.0):
+            del temperature  # just to make it compatible with the distilled policy
+            obs = torch.from_numpy(obs).float().unsqueeze(0)
+            return policy_net(obs).mean.detach().cpu().numpy().squeeze(0)
+    
+    elif args.policy_type == 'distilled':
+        policy = distill_policy_from_qnet(qnet,
+                                          env,
+                                          None,
+                                          beta_scale=args.beta_scale)
+    else:
+        raise ValueError(f"Invalid policy type: {args.policy_type}")
+
     returns = []
     if isinstance(args.temperature, list):
         temperatures = args.temperature
@@ -269,7 +315,8 @@ def test_policy_fn(args: DictConfig):
         )
 
     train_cfg = load_saved_config(args.run_dir)
-    env = load_env_from_config(train_cfg, render=False)
+    env = load_env_from_config(train_cfg, render=args.render)
+    env = wrap_env_with_saved_normalizer(env, args.run_dir)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
@@ -287,16 +334,35 @@ def test_policy_fn(args: DictConfig):
     qnet.load_state_dict(torch.load(ckpt_path, map_location=device))
     qnet.eval()
 
-    obs_norm = load_observation_normalizer(args.run_dir)
-
-    policy = distill_policy_from_qnet(qnet, env, obs_norm, beta_scale=args.beta_scale)
+    if args.policy_type == 'distilled':
+        policy = distill_policy_from_qnet(qnet,
+                                          env,
+                                          None,
+                                          beta_scale=args.beta_scale)
+    elif args.policy_type == 'learned':
+        print("[DEBUG] policy_hidden_dim: ", train_cfg['policy_hidden_dim'])
+        policy = DiagGaussianPolicy(
+            obs_dim=state_dim,
+            action_dim=action_dim,
+            hidden_dim=train_cfg['policy_hidden_dim'],
+            hidden_depth=train_cfg['policy_hidden_depth'],
+            log_std_bounds=tuple(train_cfg['log_std_bounds'])).to(device_str)
+        policy.load(args.run_dir)
+    else:
+        raise ValueError(f"Invalid policy type: {args.policy_type}")
     obs, _ = env.reset()
     if isinstance(args.temperature, list):
         temperatures = args.temperature
     else:
         temperatures = [args.temperature]
     for temperature in temperatures:
-        action = policy(obs, temperature=temperature)
+        if args.policy_type == 'distilled':
+            action = policy(obs, temperature=temperature)
+        elif args.policy_type == 'learned':
+            dist = policy(torch.from_numpy(obs).float().unsqueeze(0))
+            action = dist.mean.detach().cpu().numpy().squeeze(0)
+        else:
+            raise ValueError(f"Invalid policy type: {args.policy_type}")
         q_value = qnet(
             torch.from_numpy(obs).float().unsqueeze(0),
             torch.from_numpy(action).float().unsqueeze(0)).squeeze(dim=-1)
@@ -309,4 +375,4 @@ def test_policy_fn(args: DictConfig):
 
 
 if __name__ == '__main__':
-    test_policy_fn()
+    run()
